@@ -1,22 +1,11 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"github.com/OraCache/oracache/internal/cpapi"
 	"github.com/OraCache/oracache/internal/discovery"
-	"net/http"
 	"time"
 )
-
-// discoveryStatusHandler exposes eligible observations and remaining leases only.
-func discoveryStatusHandler(catalog *discovery.Catalog) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		snapshot, _ := catalog.Snapshot(time.Now())
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(snapshot)
-	})
-}
 
 // Discovery is opt-in and cannot be combined with static placement.
 func discoveryOptions(region, group, configPath string, ttl, interval time.Duration) ([]cpapi.Option, *discovery.Catalog, error) {
