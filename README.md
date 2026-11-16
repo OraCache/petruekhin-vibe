@@ -203,6 +203,7 @@ etcd, Controller, Scheduler, CommandDispatcher и персистентный las
 Один регион, один шард, три отдельных процесса storage-node (статический
 состав Raft, только память), CP и forwarding-gateway. Архитектура и решения —
 [ADR](docs/architecture/ADR-poc-single-shard-integration.md).
+Heartbeat discovery и leases — [отдельный ADR](docs/architecture/ADR-poc-heartbeat-discovery.md).
 
 ```text
 CLI → gateway (28080) → любая из 3 нод → shardraft.Instance → versioned LRU store
@@ -212,10 +213,17 @@ CLI → gateway (28080) → любая из 3 нод → shardraft.Instance → 
 - `cmd/storage-node` + `internal/node`: модуль внутри процесса (store + член
   Raft-группы, gRPC → `shardraft.GatewayServer`, HTTP Raft transport,
   CP-agent, lifecycle). Отдельного сетевого сервиса между Raft и store нет.
-- `cmd/cache-gateway` + `internal/gateway/forwarder.go`: пересылка Get/Put/
-  Delete/Batch лидеру из CP; при `NOT_LEADER` — на адрес лидера из подсказки
-  Raft, при `Unavailable` — на следующую реплику. Границы: `MaxAttempts` (12) и
-  общий дедлайн (10 с). CP не в горячем пути, назначения не переписываются.
+- `cmd/cache-gateway` + `internal/gateway/forwarder.go`: CP/gateway не содержат
+  списка storage-адресов. Storage сообщает адрес, группу, роль и ready через
+  heartbeat; CP выдаёт свежий каталог с оставшимися leases. При `NOT_LEADER`
+  gateway следует подсказке только на свежий адрес из каталога; при
+  `Unavailable` пробует другую реплику. Границы: `MaxAttempts` (12) и общий
+  дедлайн (10 с). CP не в горячем пути; состав Raft не меняется.
+- Compose включает discovery: heartbeat 5 с, TTL 20 с (на CP receipt clock).
+  После потери CP gateway использует только остаток leases, затем возвращает
+  `UNAVAILABLE`. Новые heartbeat восстанавливают маршруты. CP может стартовать
+  с пустым каталогом. После перезапуска CP нужно перезапустить gateway:
+  durable epochs в этом PoC нет. Static `--config` API остаётся отдельным режимом.
 - Чтения по умолчанию линеаризуемые (ReadIndex через лидера).
 - **Детерминизм вытеснения:** replicated state machine читает через
   `Store.Peek` (без продвижения в LRU), поэтому порядок LRU и вытеснение
@@ -235,7 +243,7 @@ bin/oracache put profile:1 hello --expected-rev 0     # PUT_STATUS_OK, rev
 bin/oracache put profile:1 again --expected-rev 0     # PUT_STATUS_CONFLICT
 bin/oracache get profile:1
 curl -s 127.0.0.1:28091/status                        # Raft status ноды 1 (28092, 28093)
-curl -s 127.0.0.1:28082/heartbeats                    # последние heartbeat в CP (soft state)
+curl -s 127.0.0.1:28082/heartbeats                    # свежие discovery observations + remaining_ms
 docker compose -f compose.poc.yaml kill node-3        # убить лидера
 docker compose -f compose.poc.yaml down
 ```
@@ -251,9 +259,22 @@ term/vote нарушает безопасность Raft); без TLS/аутен
 Условный Put (`expected_rev`) не применится дважды, но это **не** exactly-once:
 если первая попытка закоммитилась, а ответ потерян, повтор вернёт CONFLICT и
 исходный исход восстановить нельзя (дедупликации по request ID нет) — после
-неоднозначной ошибки считайте исход неизвестным и перечитайте ключ; heartbeat в CP — soft state без
-истечения, поэтому последний heartbeat убитой ноды остаётся виден; batch не
-может пересекать партиции; мульти-регион, динамический состав и TTL вне scope.
+неоднозначной ошибки считайте исход неизвестным и перечитайте ключ. Истечение
+heartbeat исключает ноду из маршрутизации, но не меняет Raft membership;
+sequence/term high-water marks сохраняются в CP до его остановки. Batch не
+может пересекать партиции; мульти-регион, динамический состав Raft и TTL данных
+вне scope. Это trusted-network self-registration, не проверка членства.
+
+Вне Compose discovery включается явно:
+```sh
+bin/cp-api --discovery-region region-a --discovery-group region-a/shard-0/poc-1 \
+  --heartbeat-interval 5s --discovery-ttl 20s
+```
+TTL должен превышать heartbeat interval (1 с–5 мин) и быть не больше 24 ч.
+`--config` нельзя смешивать с discovery. Группа/регион должны совпадать со
+storage; advertised client address берётся из собственного элемента `--peer`,
+а не bind-адреса. При недоступном CP backoff heartbeat может временно
+превысить TTL: это снижает доступность, но не продлевает устаревшие leases.
 
 ## Go workspace и модули
 

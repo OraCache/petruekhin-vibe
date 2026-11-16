@@ -10,7 +10,8 @@ settle the production RFC's authority, HA, membership, persistence or resharding
   region/group identity, not storage addresses or a permanent leader. Discovery
   is opt-in; the existing static configuration API remains separate.
 - Heartbeat interval defaults to 5s, discovery TTL to 20s; both are configurable
-  on CP (TTL must exceed interval). This TTL is not cache-data TTL.
+  on CP (TTL must exceed interval; interval 1s–5m, TTL at most 24h). This TTL
+  is not cache-data TTL.
 - Heartbeats advertise client address, node/region/group/partition, ready,
   draining, observed leader and term. CP uses its own receipt clock for expiry.
   Expired, not-ready and draining records are excluded from routing; a newer

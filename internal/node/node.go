@@ -100,7 +100,11 @@ func New(cfg Config) (*Node, error) {
 
 	raftPeers := make([]shardraft.Peer, 0, len(cfg.Peers))
 	addrs := make(map[uint64]string, len(cfg.Peers))
+	var clientAddress string
 	for _, p := range cfg.Peers {
+		if p.ID == cfg.PeerID {
+			clientAddress = p.ClientAddr
+		}
 		if p.NodeID == "" || p.ClientAddr == "" || p.RaftURL == "" {
 			return nil, fmt.Errorf("node: peer %d needs node ID, client address and raft URL", p.ID)
 		}
@@ -149,7 +153,8 @@ func New(cfg Config) (*Node, error) {
 		}
 		n.agent, err = cpagent.New(cpagent.Options{
 			NodeID: cfg.NodeID, Region: cfg.Region, Instance: cfg.NodeID,
-			Client: controlplanev1.NewControlPlaneAPIClient(n.cpConn), Statuses: n,
+			ClientAddress: clientAddress,
+			Client:        controlplanev1.NewControlPlaneAPIClient(n.cpConn), Statuses: n,
 			HeartbeatInterval: cfg.HeartbeatInterval, ConfigPullInterval: cfg.ConfigPullInterval,
 			Logger: n.log,
 		})
@@ -196,6 +201,7 @@ func (n *Node) PartitionStatuses(context.Context) ([]*controlplanev1.PartitionSt
 	s := n.inst.Status()
 	ps := &controlplanev1.PartitionStatus{
 		PartitionId:  s.ShardID,
+		GroupId:      n.cfg.GroupID,
 		Role:         protoRole(s.Role),
 		Term:         s.Term,
 		CommitIndex:  s.CommitIndex,

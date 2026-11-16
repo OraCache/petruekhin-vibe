@@ -133,7 +133,7 @@ func (f *Forwarder) forward(ctx context.Context, partition uint32, write bool, c
 	var order []string
 	seen := map[string]bool{}
 	add := func(a string) {
-		if a != "" && !seen[a] {
+		if a != "" && !seen[a] && f.Router.eligible(partition, write, a) {
 			seen[a] = true
 			order = append(order, a)
 		}
@@ -167,6 +167,12 @@ func (f *Forwarder) forward(ctx context.Context, partition uint32, write bool, c
 			cursor++
 		}
 		hint = ""
+		if !f.Router.eligible(partition, write, addr) {
+			if rs, e := f.Router.Replicas(partition, write); e != nil || len(rs) == 0 {
+				return status.Error(codes.Unavailable, "discovery lease expired")
+			}
+			continue
+		}
 		cl, derr := f.client(addr)
 		if derr != nil {
 			return status.Error(codes.Internal, derr.Error())
@@ -193,7 +199,7 @@ func (f *Forwarder) forward(ctx context.Context, partition uint32, write bool, c
 
 		wait := false
 		if h, notLeader := notLeaderHint(err); notLeader {
-			if h != "" && h != addr {
+			if h != "" && h != addr && f.Router.eligible(partition, write, h) {
 				hint = h // follow the actual Raft leader at once
 			} else {
 				wait = cursor%len(order) == 0 // election in progress: pace the retries

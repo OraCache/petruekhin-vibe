@@ -25,9 +25,10 @@ import (
 	"google.golang.org/grpc"
 )
 
-func newServer(store statestore.Store, logger *slog.Logger) *grpc.Server {
+func newServer(store statestore.Store, logger *slog.Logger, opts ...cpapi.Option) *grpc.Server {
 	server := grpc.NewServer(grpc.MaxRecvMsgSize(16 << 20))
-	controlplanev1.RegisterControlPlaneAPIServer(server, cpapi.New(store, cpapi.WithLogger(logger)))
+	opts = append(opts, cpapi.WithLogger(logger))
+	controlplanev1.RegisterControlPlaneAPIServer(server, cpapi.New(store, opts...))
 	return server
 }
 
@@ -79,6 +80,10 @@ func main() {
 	listen := flag.String("listen", "127.0.0.1:50052", "plaintext gRPC listen address (use port 0 for an ephemeral port)")
 	configPath := flag.String("config", "", "optional JSON config snapshot loaded into the in-memory store")
 	statusListen := flag.String("status-listen", "", "optional HTTP address serving read-only heartbeat diagnostics at /heartbeats")
+	discoveryRegion := flag.String("discovery-region", "", "opt-in discovery region; requires --discovery-group")
+	discoveryGroup := flag.String("discovery-group", "", "static Raft group identity, not membership")
+	discoveryTTL := flag.Duration("discovery-ttl", 20*time.Second, "receiver-side discovery lease")
+	heartbeat := flag.Duration("heartbeat-interval", 5*time.Second, "heartbeat interval advertised in discovery mode")
 	flag.Parse()
 	if flag.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, "unexpected positional arguments")
@@ -86,6 +91,11 @@ func main() {
 	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	opts, catalog, err := discoveryOptions(*discoveryRegion, *discoveryGroup, *configPath, *discoveryTTL, *heartbeat)
+	if err != nil {
+		logger.Error("discovery settings", "error", err)
+		os.Exit(2)
+	}
 	store := statestore.NewMemory()
 	revision := uint64(0)
 	if *configPath != "" {
@@ -106,11 +116,15 @@ func main() {
 		logger.Error("listen", "address", *listen, "error", err)
 		os.Exit(1)
 	}
-	server := newServer(store, logger)
+	server := newServer(store, logger, opts...)
 
 	if *statusListen != "" {
 		mux := http.NewServeMux()
-		mux.Handle("/heartbeats", statusHandler(store))
+		if catalog != nil {
+			mux.Handle("/heartbeats", discoveryStatusHandler(catalog))
+		} else {
+			mux.Handle("/heartbeats", statusHandler(store))
+		}
 		go func() {
 			srv := &http.Server{Addr: *statusListen, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 			if err := srv.ListenAndServe(); err != nil {
