@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	cp "github.com/OraCache/oracache/gen/controlplane/v1"
 	pb "github.com/OraCache/oracache/gen/gateway/v1"
 	"github.com/OraCache/oracache/internal/cpconfig"
 	"github.com/OraCache/oracache/internal/gateway"
@@ -91,6 +92,71 @@ func TestForwarderFollowsNotLeaderHintAndRemembersLeader(t *testing.T) {
 	}
 	if n1.calls != 1 || n2.calls != 0 || n3.calls != 3 {
 		t.Fatalf("hint must be followed once, then the learned leader reused: %d/%d/%d", n1.calls, n2.calls, n3.calls)
+	}
+}
+
+// New hints win over old success, but an identical hint must not reset a more
+// recent traffic-learned success on every request/refresh.
+func TestForwarderNewCPHintSupersedesLearnedSuccess(t *testing.T) {
+	n1, n2, n3 := &fakeNode{rev: 1}, &fakeNode{rev: 2}, &fakeNode{rev: 3}
+	f := newForwarder(t, map[string]*fakeNode{"a1": n1, "a2": n2, "a3": n3})
+	put := func(want uint64) {
+		t.Helper()
+		out, err := f.Put(context.Background(), &pb.PutRequest{Key: "k"})
+		if err != nil || out.GetRev() != want {
+			t.Fatalf("want %d: %v %v", want, out, err)
+		}
+	}
+	hint := func(id string, term uint64) {
+		t.Helper()
+		if err := f.Router.ApplyLeaderHints([]*cp.LeaderHint{{Region: "r", PartitionId: 0, NodeId: id, Term: term}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put(1) // cache a1 even though all replicas answer
+	hint("n2", 2)
+	put(2) // old a1 must not hide CP n2
+	n2.err = notLeader(t, "a3")
+	put(3) // learn n3 after stale CP hint
+	hint("n2", 2)
+	put(3) // identical CP hint must preserve learned success
+	if n2.calls != 2 {
+		t.Fatalf("unchanged hint reset success: %d calls", n2.calls)
+	}
+	n2.err = nil
+	hint("n2", 3)
+	put(2) // term change alone invalidates n3
+	hint("n1", 2)
+	put(2) // delayed old term is ignored by Router, so preserve n2
+	if f.Router.Revision() != 1 {
+		t.Fatal("hint advanced config revision")
+	}
+}
+
+func TestForwarderRejectsUnconfiguredCPAndNotLeaderDestinations(t *testing.T) {
+	n1, n2 := &fakeNode{err: notLeader(t, "foreign")}, &fakeNode{rev: 2}
+	f := newForwarder(t, map[string]*fakeNode{"a1": n1, "a2": n2, "a3": {}})
+	if err := f.Router.ApplyLeaderHints([]*cp.LeaderHint{{Region: "r", NodeId: "foreign", Term: 5}}); err == nil {
+		t.Fatal("accepted unknown CP node")
+	}
+	if err := f.Router.ApplyLeaderHints([]*cp.LeaderHint{{Region: "other", NodeId: "n1", Term: 5}}); err == nil {
+		t.Fatal("accepted foreign CP region")
+	}
+	original := f.Dial
+	var addresses []string
+	f.Dial = func(addr string) (pb.CacheGatewayClient, error) {
+		addresses = append(addresses, addr)
+		if addr == "foreign" {
+			t.Fatal("dialed unconfigured NOT_LEADER destination")
+		}
+		return original(addr)
+	}
+	out, err := f.Put(context.Background(), &pb.PutRequest{Key: "k"})
+	if err != nil || out.GetRev() != 2 {
+		t.Fatalf("fallback: %v %v", out, err)
+	}
+	if len(addresses) != 2 || addresses[0] != "a1" || addresses[1] != "a2" {
+		t.Fatalf("unexpected attempts: %v", addresses)
 	}
 }
 

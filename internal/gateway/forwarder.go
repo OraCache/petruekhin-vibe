@@ -21,8 +21,8 @@ import (
 // partition. The Router only resolves addresses; the Forwarder adds bounded
 // failover:
 //
-//   - The first target is the last node that answered (learned from traffic),
-//     else the CP-assigned leader.
+//   - A changed CP leader hint supersedes learned preferences. Otherwise use
+//     the last successful configured replica, then the CP-observed/assigned leader.
 //   - NOT_LEADER (a guaranteed pre-proposal refusal) is retried at the Raft
 //     leader address from the hint, if any, otherwise at the next replica.
 //   - Unavailable moves on to the next replica. For writes this can be
@@ -49,7 +49,7 @@ type Forwarder struct {
 
 	mu        sync.Mutex
 	conns     map[string]*grpc.ClientConn
-	preferred map[uint32]string
+	preferred map[forwardRoute]preference
 }
 
 // Close releases cached connections.
@@ -116,16 +116,7 @@ func notLeaderHint(err error) (addr string, ok bool) {
 // a non-retryable error or the bounds are exhausted. call receives the node
 // address that served it.
 func (f *Forwarder) forward(ctx context.Context, partition uint32, write bool, call func(context.Context, pb.CacheGatewayClient, string) error) error {
-	replicas, err := f.Router.Replicas(partition, write)
-	if err != nil {
-		return status.Error(codes.Unavailable, err.Error())
-	}
-	var leader Leader
-	if write {
-		leader, err = f.Router.WriteLeader(partition)
-	} else {
-		leader, err = f.Router.GetLeader(partition)
-	}
+	leader, replicas, token, err := f.Router.forwardRoute(partition, write)
 	if err != nil {
 		return status.Error(codes.Unavailable, err.Error())
 	}
@@ -133,15 +124,21 @@ func (f *Forwarder) forward(ctx context.Context, partition uint32, write bool, c
 	var order []string
 	seen := map[string]bool{}
 	add := func(a string) {
-		if a != "" && !seen[a] && f.Router.eligible(partition, write, a) {
+		if a != "" && !seen[a] && f.Router.configuredReplica(partition, write, a) {
 			seen[a] = true
 			order = append(order, a)
 		}
 	}
+	key := forwardRoute{partition: partition, region: leader.Region}
 	f.mu.Lock()
-	pref := f.preferred[partition]
+	pref := f.preferred[key]
 	f.mu.Unlock()
-	add(pref)
+	// Only a changed CP observation/config target invalidates learned success.
+	// Stamp success with this request's token so an older in-flight request cannot
+	// make its preference hide a newer hint.
+	if pref.token == token {
+		add(pref.address)
+	}
 	add(leader.Address)
 	for _, r := range replicas {
 		add(r.Address)
@@ -167,10 +164,7 @@ func (f *Forwarder) forward(ctx context.Context, partition uint32, write bool, c
 			cursor++
 		}
 		hint = ""
-		if !f.Router.eligible(partition, write, addr) {
-			if rs, e := f.Router.Replicas(partition, write); e != nil || len(rs) == 0 {
-				return status.Error(codes.Unavailable, "discovery lease expired")
-			}
+		if !f.Router.configuredReplica(partition, write, addr) {
 			continue
 		}
 		cl, derr := f.client(addr)
@@ -183,23 +177,27 @@ func (f *Forwarder) forward(ctx context.Context, partition uint32, write bool, c
 		if err == nil {
 			f.mu.Lock()
 			if f.preferred == nil {
-				f.preferred = map[uint32]string{}
+				f.preferred = map[forwardRoute]preference{}
 			}
-			f.preferred[partition] = addr
+			// An older in-flight request must not erase a preference learned
+			// after a newer CP observation. Only learn under the current token.
+			if _, _, current, err := f.Router.forwardRoute(partition, write); err == nil && current == token {
+				f.preferred[key] = preference{address: addr, token: token}
+			}
 			f.mu.Unlock()
 			return nil
 		}
 		lastErr = err
 
 		f.mu.Lock()
-		if f.preferred[partition] == addr {
-			delete(f.preferred, partition)
+		if pref := f.preferred[key]; pref.address == addr && pref.token == token {
+			delete(f.preferred, key)
 		}
 		f.mu.Unlock()
 
 		wait := false
 		if h, notLeader := notLeaderHint(err); notLeader {
-			if h != "" && h != addr && f.Router.eligible(partition, write, h) {
+			if h != "" && h != addr && f.Router.configuredReplica(partition, write, h) {
 				hint = h // follow the actual Raft leader at once
 			} else {
 				wait = cursor%len(order) == 0 // election in progress: pace the retries

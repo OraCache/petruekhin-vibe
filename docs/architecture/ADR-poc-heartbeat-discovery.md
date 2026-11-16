@@ -1,6 +1,10 @@
 # PoC heartbeat discovery
 
-Status: implementation policy for the owner-approved ADR-004/RFC-004 PoC addition.
+Status: superseded by [static config + leader hints](ADR-poc-static-leader-hints.md).
+The leased-discovery implementation and flags have been removed. The decisions
+below are historical, not current startup instructions or availability guarantees.
+
+Original status: implementation policy for the owner-approved ADR-004/RFC-004 PoC addition.
 Scope: one region, one partition, one static Raft group, RAM only. This does not
 settle the production RFC's authority, HA, membership, persistence or resharding.
 

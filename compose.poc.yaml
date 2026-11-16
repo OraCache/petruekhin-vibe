@@ -19,9 +19,10 @@ services:
       dockerfile: Dockerfile.poc
     restart: "no"
     entrypoint: ["/cp-api"]
-    command: ["--listen", "0.0.0.0:50052", "--discovery-region", "region-a",
-      "--discovery-group", "region-a/shard-0/poc-1", "--discovery-ttl", "20s",
-      "--heartbeat-interval", "5s", "--status-listen", "0.0.0.0:8080"]
+    command: ["--listen", "0.0.0.0:50052", "--config", "/etc/oracache/cp.json",
+      "--status-listen", "0.0.0.0:8080"]
+    volumes:
+      - ./deploy/poc/cp.json:/etc/oracache/cp.json:ro
     ports:
       - "127.0.0.1:${ORACACHE_POC_CP_PORT:-28081}:50052"
       - "127.0.0.1:${ORACACHE_POC_CP_STATUS_PORT:-28082}:8080"

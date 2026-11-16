@@ -36,14 +36,21 @@ storage node = [ gRPC adapter -> shardraft.Instance -> versioned LRU store ]
   on top of it; the legacy `internal/cache` stays for the existing gateway.
 * **CP** (`cmd/cp-api`, `internal/cp*`, `internal/statestore`): reused from the
   earlier CP implementation (commit c8e28c7, owner-confirmed as valid).
-  Static bootstrap config only. Heartbeats are **soft state** and do not mutate
-  assignments; CP is not a scheduler.
+  Static bootstrap config from `deploy/poc/cp.json`, mounted read-only in Compose.
+  Heartbeats are **soft state** and do not mutate assignments or config revision;
+  CP is not a scheduler. They separately update term-ordered leader hints, served
+  even at unchanged config revision. See [routing ADR](ADR-poc-static-leader-hints.md),
+  which supersedes the intermediate leased-discovery mode.
 * **Gateway** (`cmd/cache-gateway`): the existing `internal/gateway` router only
   resolves addresses, so a forwarding layer is added. It forwards Get/Put/
-  Delete (and batches) to the CP-assigned leader and fails over using the
-  **actual Raft `NOT_LEADER` hint** and, if that is missing, the other replicas
-  from the assignment, within a fixed attempt count and one overall deadline.
-  The last node that answered successfully is remembered in process memory.
+  Delete (and batches) to the CP-observed leader (otherwise the static assigned
+  leader) and fails over using the **actual Raft `NOT_LEADER` hint** and other
+  configured regional replicas, within a fixed attempt count and overall deadline.
+  Learned and NOT_LEADER addresses must belong to that static regional assignment.
+  The last successful address is remembered per region/partition until CP's
+  term/node or resolved target changes; an identical refresh does not discard it.
+  CP outages do not expire routes. Hints are advisory: Raft still verifies quorum
+  and authority for linearizable operations. No read round-robin is implemented.
 
 ## Key decisions
 
