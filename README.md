@@ -163,9 +163,10 @@ Go клиент и интерфейс сервера находятся в `gen/
   тело передаётся только при новой revision.
 - `internal/statestore` — граница `Store`; `MemoryStore` — временная Phase 1
   реализация без etcd (TODO и ADR-001).
-- `internal/cpapi` — stateless gRPC API: принимает heartbeat, отдаёт snapshot.
-  Heartbeat — soft state; CP API не выводит из него лидеров и не содержит
-  placement-логики.
+- `internal/cpapi` — gRPC API: принимает heartbeat, отдаёт статический snapshot
+  и отдельные term-ordered `leader_hints`. Только готовая настроенная реплика,
+  сообщающая себя LEADER с ненулевым term, обновляет подсказку. Heartbeat не
+  меняет assignments, адреса, membership или revision; placement-логики нет.
 - `internal/cpagent` — встроенный модуль `oracache-node`, не сайдкар:
   heartbeat раз в 5 с, config pull раз в 10 с и немедленный pull, если
   heartbeat вернул новую revision. Ошибки CP логируются и ретраятся; Data
@@ -197,6 +198,93 @@ etcd, Controller, Scheduler, CommandDispatcher и персистентный las
 
 Тесты Phase 1 входят в `make test`: валидация конфига, монотонность revision,
 контракт CP API, циклы агента, routing map и e2e через настоящий loopback gRPC.
+
+## Single-shard PoC (ветка integration/poc)
+
+Один регион, один шард, три отдельных процесса storage-node (статический
+состав Raft, только память), CP и forwarding-gateway. Архитектура и решения —
+[ADR](docs/architecture/ADR-poc-single-shard-integration.md).
+Статическая конфигурация и heartbeat leader hints —
+[ADR](docs/architecture/ADR-poc-static-leader-hints.md). Он заменяет прежний
+[leased discovery](docs/architecture/ADR-poc-heartbeat-discovery.md), который удалён из реализации.
+
+```text
+CLI → gateway (28080) → любая из 3 нод → shardraft.Instance → versioned LRU store
+                  ↘ poll GetConfig → CP ← heartbeat (реальный Raft status) ↙
+```
+
+- `cmd/storage-node` + `internal/node`: модуль внутри процесса (store + член
+  Raft-группы, gRPC → `shardraft.GatewayServer`, HTTP Raft transport,
+  CP-agent, lifecycle). Отдельного сетевого сервиса между Raft и store нет.
+- `cmd/cache-gateway` + `internal/gateway/forwarder.go`: CP загружает адреса и
+  regional assignments из `deploy/poc/cp.json`; gateway получает их через
+  `GetConfig`. Heartbeat сообщает реальный Raft status, но не регистрирует адреса.
+  Сначала выбирается наблюдаемый лидер (иначе статический `leader_node_id`).
+  Успешный адрес кэшируется отдельно для региона/partition; новая пара term/node
+  из CP вытесняет старое предпочтение, повтор той же подсказки — нет.
+- При `NOT_LEADER` gateway следует адресу только из настроенных реплик нужного
+  региона; при `Unavailable` пробует остальные реплики. Границы: `MaxAttempts`
+  (12), общий дедлайн (10 с) и дедлайн попытки (3 с). Это bounded fallback,
+  не round-robin балансировка. CP не находится в горячем пути.
+- Compose передаёт `--config /etc/oracache/cp.json` с read-only mount;
+  heartbeat по умолчанию 5 с, gateway poll 10 с. `leader_hints` доставляются
+  даже при прежней config revision. Меньший term не откатывает наблюдение;
+  конфликт лидеров в одном term остаётся пустой подсказкой до большего term.
+  При потере CP gateway продолжает использовать последнюю конфигурацию без
+  leases. После рестарта CP пустой ответ не сбрасывает high-water marks gateway;
+  рестарт gateway для этого не нужен. Оба процесса хранят наблюдения только в RAM.
+- Чтения по умолчанию линеаризуемые (ReadIndex через лидера).
+- **Детерминизм вытеснения:** replicated state machine читает через
+  `Store.Peek` (без продвижения в LRU), поэтому порядок LRU и вытеснение
+  определяются только реплицируемыми записями. Чтение не продлевает жизнь ключа.
+- Ревизии — глобальная возрастающая последовательность store (не плотная
+  по ключу); `expected_rev=0` — «ключа нет».
+- Checkpoint/Restore store хранит версии, seq, порядок LRU и конфигурацию
+  (только в памяти; используется Raft snapshot для отставшей реплики).
+
+```sh
+docker compose -f compose.poc.yaml up -d --build     # проект oracache-poc
+make poc-smoke                                        # CLI + убийство лидера
+# вручную:
+export ORACACHE_ENDPOINT=127.0.0.1:28080
+go build -o bin/oracache ./cmd/oracache
+bin/oracache put profile:1 hello --expected-rev 0     # PUT_STATUS_OK, rev
+bin/oracache put profile:1 again --expected-rev 0     # PUT_STATUS_CONFLICT
+bin/oracache get profile:1
+curl -s 127.0.0.1:28091/status                        # Raft status ноды 1 (28092, 28093)
+curl -s 127.0.0.1:28082/heartbeats                    # read-only config + leader_hints (не leases)
+docker compose -f compose.poc.yaml kill node-3        # убить лидера
+docker compose -f compose.poc.yaml down
+```
+
+Порты (только loopback): 28080 gateway, 28081 CP gRPC, 28082 CP diagnostics,
+28091–28093 статус нод. Тесты: `go test -race ./internal/node ./internal/gateway
+./internal/store` (в `internal/node` — кластер на реальных TCP/HTTP/gRPC с
+убийством лидера, одинаковые checkpoint реплик, snapshot отставшей реплики).
+
+Ограничения: убитую ноду **не** возвращают в группу (нет персистентности, потеря
+term/vote нарушает безопасность Raft); без TLS/аутентификации; повтор
+безусловного Put после неоднозначной ошибки может создать лишнюю версию.
+Условный Put (`expected_rev`) не применится дважды, но это **не** exactly-once:
+если первая попытка закоммитилась, а ответ потерян, повтор вернёт CONFLICT и
+исходный исход восстановить нельзя (дедупликации по request ID нет) — после
+неоднозначной ошибки считайте исход неизвестным и перечитайте ключ. Подсказка
+может устареть сразу после получения и не доказывает наличие кворума: право
+обслуживать linearizable-запросы проверяет storage/Raft. Адреса проверяются по
+статическому списку, но отправитель heartbeat не аутентифицирован. Batch не
+может пересекать партиции; мульти-регион, динамический состав Raft, mTLS,
+oractl, WAN и TTL данных вне scope. Нет гарантий durable replay protection при
+одновременном рестарте CP и gateway.
+
+Вне Compose CP запускается с явным статическим snapshot:
+```sh
+bin/cp-api --config deploy/poc/cp.json --status-listen 127.0.0.1:28082
+```
+Адреса в примере `cp.json` предназначены для Compose DNS; при запуске локальных
+процессов задайте достижимые client addresses. Список реплик в CP должен
+соответствовать static `--peer` storage. Bind-адреса `0.0.0.0` не являются
+клиентскими адресами. Файл читается один раз при запуске; live reload,
+автоматические join/replacement и управление размещением не реализованы.
 
 ## Go workspace и модули
 
