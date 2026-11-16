@@ -6,7 +6,16 @@
 - Объединённая компонентная база: `641ce8941f0e5587c4a0d2c14c719e0f9f461783`.
 - Application: `330c76fae0c1d0a2289a0047934c58b9edb2fc40`.
 
-Это локальные коммиты: публикация этой документации не означает публикацию кода или успешный hosted CI новых веток. Рабочий стенд не обновлялся.
+Выше указан первоначальный локально проверенный срез. Затем код опубликован и разделён для самостоятельного ревью:
+
+- [CP/router #65](https://github.com/OraCache/OraCache/pull/65): `79e36a61017d7cdb4c4b76586b0d815c96820c5b`.
+- [Gateway #2](https://github.com/OraCache/petruekhin-vibe/pull/2), base CP: `73ff824f5723ca050d2f17c62b808cb916c3f258`, 6 файлов/+842.
+- Объединённая база с gateway: `4d6ca3c063dfd07360ac8d33fff988602d414931`.
+- [Application #1](https://github.com/OraCache/petruekhin-vibe/pull/1), base объединённых компонентов с gateway: `8061f787296dfe0e955c266bbea7f88dc37725ae`, 20 файлов/+1796/−8.
+
+Итоговое application-дерево побайтно совпадает с `330c76f`; gateway implementation paths идентичны в его собственном PR, объединённой базе и application. Gateway самостоятельно прошёл root/CLI/gen race-тесты, vet и make build без storage application layer. Объединённая база также независимо прошла root race-тесты и vet. История опубликованных веток сохранена без force-push. Рабочий стенд не обновлялся.
+
+Hosted CI проверен отдельно: [CP test/e2e](https://github.com/OraCache/OraCache/actions/runs/43939829997) и [application test/e2e/poc](https://github.com/OraCache/petruekhin-vibe/actions/runs/43939827488) успешны. Gateway CI запущен отдельным PR; его текущий результат следует смотреть в checks самого PR, а не выводить из результатов application.
 
 ## Что реализовано
 
