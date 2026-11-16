@@ -1,0 +1,230 @@
+package gateway_test
+
+import (
+	"context"
+	"sync"
+	"testing"
+	"time"
+
+	cp "github.com/OraCache/oracache/gen/controlplane/v1"
+	pb "github.com/OraCache/oracache/gen/gateway/v1"
+	"github.com/OraCache/oracache/internal/cpconfig"
+	"github.com/OraCache/oracache/internal/gateway"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+)
+
+// fakeNode scripts the answer of one storage node address.
+type fakeNode struct {
+	pb.CacheGatewayClient
+	mu    sync.Mutex
+	calls int
+	err   error
+	rev   uint64
+}
+
+func (f *fakeNode) Put(context.Context, *pb.PutRequest, ...grpc.CallOption) (*pb.PutResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &pb.PutResponse{Status: pb.PutStatus_PUT_STATUS_OK, Rev: f.rev}, nil
+}
+
+func (f *fakeNode) Get(ctx context.Context, r *pb.GetRequest, o ...grpc.CallOption) (*pb.GetResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &pb.GetResponse{Status: pb.GetStatus_GET_STATUS_HIT, Rev: f.rev}, nil
+}
+
+func notLeader(t *testing.T, leaderAddr string) error {
+	t.Helper()
+	st, err := status.New(codes.FailedPrecondition, "not leader").WithDetails(&errdetails.ErrorInfo{
+		Reason: "NOT_LEADER", Domain: "oracache.shardraft", Metadata: map[string]string{"address": leaderAddr},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st.Err()
+}
+
+func newForwarder(t *testing.T, nodes map[string]*fakeNode) *gateway.Forwarder {
+	t.Helper()
+	cfg := &cpconfig.Config{
+		Revision: 1, PartitionCount: 1,
+		Regions: []cpconfig.Region{{ID: "r", Role: cpconfig.RegionRoleMaster}},
+		Nodes: []cpconfig.Node{
+			{ID: "n1", Region: "r", Address: "a1"}, {ID: "n2", Region: "r", Address: "a2"}, {ID: "n3", Region: "r", Address: "a3"},
+		},
+		Partitions: []cpconfig.PartitionAssignment{{PartitionID: 0, Region: "r", LeaderNodeID: "n1", ReplicaNodeIDs: []string{"n1", "n2", "n3"}}},
+	}
+	router, err := gateway.NewRouter("r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := router.Apply(cfg); err != nil {
+		t.Fatal(err)
+	}
+	return &gateway.Forwarder{
+		Router: router, Backoff: time.Millisecond, Timeout: 5 * time.Second,
+		Dial: func(addr string) (pb.CacheGatewayClient, error) { return nodes[addr], nil },
+	}
+}
+
+func TestForwarderFollowsNotLeaderHintAndRemembersLeader(t *testing.T) {
+	n1 := &fakeNode{err: notLeader(t, "a3")} // CP says n1, Raft says n3
+	n2 := &fakeNode{}
+	n3 := &fakeNode{rev: 7}
+	f := newForwarder(t, map[string]*fakeNode{"a1": n1, "a2": n2, "a3": n3})
+	for i := 0; i < 3; i++ {
+		r, err := f.Put(context.Background(), &pb.PutRequest{Key: "k"})
+		if err != nil || r.Rev != 7 || r.ServedBy.GetInstance() != "n3" {
+			t.Fatalf("Put: %v %v", r, err)
+		}
+	}
+	if n1.calls != 1 || n2.calls != 0 || n3.calls != 3 {
+		t.Fatalf("hint must be followed once, then the learned leader reused: %d/%d/%d", n1.calls, n2.calls, n3.calls)
+	}
+}
+
+// New hints win over old success, but an identical hint must not reset a more
+// recent traffic-learned success on every request/refresh.
+func TestForwarderNewCPHintSupersedesLearnedSuccess(t *testing.T) {
+	n1, n2, n3 := &fakeNode{rev: 1}, &fakeNode{rev: 2}, &fakeNode{rev: 3}
+	f := newForwarder(t, map[string]*fakeNode{"a1": n1, "a2": n2, "a3": n3})
+	put := func(want uint64) {
+		t.Helper()
+		out, err := f.Put(context.Background(), &pb.PutRequest{Key: "k"})
+		if err != nil || out.GetRev() != want {
+			t.Fatalf("want %d: %v %v", want, out, err)
+		}
+	}
+	hint := func(id string, term uint64) {
+		t.Helper()
+		if err := f.Router.ApplyLeaderHints([]*cp.LeaderHint{{Region: "r", PartitionId: 0, NodeId: id, Term: term}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put(1) // cache a1 even though all replicas answer
+	hint("n2", 2)
+	put(2) // old a1 must not hide CP n2
+	n2.err = notLeader(t, "a3")
+	put(3) // learn n3 after stale CP hint
+	hint("n2", 2)
+	put(3) // identical CP hint must preserve learned success
+	if n2.calls != 2 {
+		t.Fatalf("unchanged hint reset success: %d calls", n2.calls)
+	}
+	n2.err = nil
+	hint("n2", 3)
+	put(2) // term change alone invalidates n3
+	hint("n1", 2)
+	put(2) // delayed old term is ignored by Router, so preserve n2
+	if f.Router.Revision() != 1 {
+		t.Fatal("hint advanced config revision")
+	}
+}
+
+func TestForwarderRejectsUnconfiguredCPAndNotLeaderDestinations(t *testing.T) {
+	n1, n2 := &fakeNode{err: notLeader(t, "foreign")}, &fakeNode{rev: 2}
+	f := newForwarder(t, map[string]*fakeNode{"a1": n1, "a2": n2, "a3": {}})
+	if err := f.Router.ApplyLeaderHints([]*cp.LeaderHint{{Region: "r", NodeId: "foreign", Term: 5}}); err == nil {
+		t.Fatal("accepted unknown CP node")
+	}
+	if err := f.Router.ApplyLeaderHints([]*cp.LeaderHint{{Region: "other", NodeId: "n1", Term: 5}}); err == nil {
+		t.Fatal("accepted foreign CP region")
+	}
+	original := f.Dial
+	var addresses []string
+	f.Dial = func(addr string) (pb.CacheGatewayClient, error) {
+		addresses = append(addresses, addr)
+		if addr == "foreign" {
+			t.Fatal("dialed unconfigured NOT_LEADER destination")
+		}
+		return original(addr)
+	}
+	out, err := f.Put(context.Background(), &pb.PutRequest{Key: "k"})
+	if err != nil || out.GetRev() != 2 {
+		t.Fatalf("fallback: %v %v", out, err)
+	}
+	if len(addresses) != 2 || addresses[0] != "a1" || addresses[1] != "a2" {
+		t.Fatalf("unexpected attempts: %v", addresses)
+	}
+}
+
+func TestForwarderFailsOverFromUnavailableLeader(t *testing.T) {
+	n1 := &fakeNode{err: status.Error(codes.Unavailable, "connection refused")}
+	n2 := &fakeNode{err: notLeader(t, "")} // election still running: no hint
+	n3 := &fakeNode{rev: 3}
+	f := newForwarder(t, map[string]*fakeNode{"a1": n1, "a2": n2, "a3": n3})
+	g, err := f.Get(context.Background(), &pb.GetRequest{Key: "k"})
+	if err != nil || g.Rev != 3 {
+		t.Fatalf("Get: %v %v", g, err)
+	}
+}
+
+func TestForwarderIsBounded(t *testing.T) {
+	down := func() *fakeNode { return &fakeNode{err: status.Error(codes.Unavailable, "down")} }
+	nodes := map[string]*fakeNode{"a1": down(), "a2": down(), "a3": down()}
+	f := newForwarder(t, nodes)
+	f.MaxAttempts = 5
+	_, err := f.Put(context.Background(), &pb.PutRequest{Key: "k"})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("want Unavailable, got %v", err)
+	}
+	total := nodes["a1"].calls + nodes["a2"].calls + nodes["a3"].calls
+	if total != 5 {
+		t.Fatalf("expected exactly MaxAttempts calls, got %d", total)
+	}
+}
+
+func TestForwarderNeverRetriesAmbiguousWritesButRetriesReads(t *testing.T) {
+	n1 := &fakeNode{err: status.Error(codes.DeadlineExceeded, "slow")}
+	n2 := &fakeNode{rev: 1}
+	f := newForwarder(t, map[string]*fakeNode{"a1": n1, "a2": n2, "a3": &fakeNode{}})
+	if _, err := f.Put(context.Background(), &pb.PutRequest{Key: "k"}); status.Code(err) != codes.DeadlineExceeded || n2.calls != 0 {
+		t.Fatalf("write must stop at DeadlineExceeded: %v (n2 calls %d)", err, n2.calls)
+	}
+	if g, err := f.Get(context.Background(), &pb.GetRequest{Key: "k"}); err != nil || g.Rev != 1 {
+		t.Fatalf("read must fail over: %v %v", g, err)
+	}
+}
+
+func TestForwarderReturnsApplicationErrorsUnchanged(t *testing.T) {
+	n1 := &fakeNode{err: status.Error(codes.InvalidArgument, "bad key")}
+	f := newForwarder(t, map[string]*fakeNode{"a1": n1, "a2": {}, "a3": {}})
+	if _, err := f.Put(context.Background(), &pb.PutRequest{Key: "k"}); status.Code(err) != codes.InvalidArgument || n1.calls != 1 {
+		t.Fatalf("got %v after %d calls", err, n1.calls)
+	}
+}
+
+func TestForwarderTimeoutIsHardCapAndCallerDeadlineStillApplies(t *testing.T) {
+	down := func() *fakeNode { return &fakeNode{err: status.Error(codes.Unavailable, "down")} }
+	run := func(cap, callerDeadline time.Duration) time.Duration {
+		f := newForwarder(t, map[string]*fakeNode{"a1": down(), "a2": down(), "a3": down()})
+		f.MaxAttempts, f.Backoff, f.Timeout = 1_000_000, 5*time.Millisecond, cap
+		ctx, cancel := context.WithTimeout(context.Background(), callerDeadline)
+		defer cancel()
+		start := time.Now()
+		if _, err := f.Get(ctx, &pb.GetRequest{Key: "k"}); status.Code(err) != codes.Unavailable {
+			t.Fatalf("want Unavailable, got %v", err)
+		}
+		return time.Since(start)
+	}
+	// Caller allows 30s but the gateway cap is 150ms: the cap wins.
+	if d := run(150*time.Millisecond, 30*time.Second); d < 140*time.Millisecond || d > 2*time.Second {
+		t.Fatalf("cap not honored, took %v", d)
+	}
+	// Caller deadline 100ms is earlier than the 30s cap: the caller wins.
+	if d := run(30*time.Second, 100*time.Millisecond); d < 90*time.Millisecond || d > 2*time.Second {
+		t.Fatalf("caller deadline not honored, took %v", d)
+	}
+}
