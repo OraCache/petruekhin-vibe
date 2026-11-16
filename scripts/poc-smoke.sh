@@ -47,15 +47,15 @@ echo "== waiting for a leader"
 L1=$(wait_leader) || fail "no leader elected"
 echo "leader: node-$L1"
 
-# Election readiness and discovery readiness are independent. Wait for a
-# successful real request through gateway before asserting response semantics.
-echo "== waiting for heartbeat discovery via gateway"
+# Election readiness and initial static CP config pull are independent. Wait
+# for a real gateway request; hints may lag and configured-replica fallback works.
+echo "== waiting for configured routing via gateway"
 ready=false
 for _ in $(seq 1 60); do
  if cli get "$KEY" > /dev/null 2>&1; then ready=true; break; fi
  sleep 1
 done
-[ "$ready" = true ] || fail "gateway did not discover ready storage nodes"
+[ "$ready" = true ] || fail "gateway could not route to configured storage replicas"
 
 echo "== CLI via gateway $ORACACHE_ENDPOINT, key $KEY"
 expect "get absent" "$(cli get "$KEY" | field status)" GET_STATUS_MISS
