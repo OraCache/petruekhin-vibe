@@ -23,10 +23,11 @@ type result struct {
 	err     error
 }
 type request struct {
-	ctx   context.Context
-	op    operation
-	data  []byte
-	reply chan result
+	ctx        context.Context
+	op         operation
+	data       []byte
+	allowStale bool
+	reply      chan result
 }
 type pendingRequest struct {
 	request
@@ -277,7 +278,7 @@ func (n *Instance) accept(r request) {
 	}
 	s := n.raw.BasicStatus()
 	read := r.op == opGet || r.op == opBatchGet
-	if read && n.cfg.ReadMode == Local {
+	if read && (r.allowStale || n.cfg.ReadMode == Local) {
 		if s.Lead == 0 || n.applied < s.Commit {
 			r.reply <- result{err: unavailable("replica is not ready")}
 			return

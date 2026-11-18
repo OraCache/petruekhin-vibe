@@ -15,6 +15,7 @@ build:
 	go build -o bin/oracache ./cmd/oracache
 	go build -o bin/gateway ./cmd/gateway
 	go build -o bin/cp-api ./cmd/cp-api
+	go build -o bin/storage-node ./cmd/storage-node
 	go build -o bin/cache-gateway ./cmd/cache-gateway
 
 # Clear every expected report before even installing tools: an aborted run must

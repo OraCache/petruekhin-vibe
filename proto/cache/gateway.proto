@@ -80,6 +80,9 @@ message GetRequest {
   uint64 rev = 2;
 
   RoutingHints hints = 3;
+
+  // Разрешить чтение локально применённого состояния без барьера Raft.
+  bool allow_stale = 4;
 }
 
 enum GetStatus {
@@ -174,6 +177,8 @@ message DeleteResponse {
 
 message BatchGetRequest {
   repeated GetRequest items = 1;    // не больше 1000
+  // Режим всей пачки; allow_stale отдельных items не учитывается.
+  bool allow_stale = 2;
 }
 
 message BatchGetResponse {
