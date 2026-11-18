@@ -1,4 +1,4 @@
-.PHONY: build docker-build test test-gateway test-protobuf test-cli vet gen generate test-e2e up down
+.PHONY: build docker-build test test-gateway test-protobuf test-cli vet gen generate test-e2e up down poc-up poc-down poc-smoke
 
 .DEFAULT_GOAL := build
 
@@ -94,3 +94,15 @@ up:
 
 down:
 	docker compose down
+
+# Single-region, single-shard PoC (Compose project oracache-poc, ports 28080+).
+poc-up:
+	docker compose -f compose.poc.yaml up -d --build
+
+poc-down:
+	docker compose -f compose.poc.yaml down
+
+# CLI smoke plus kill-the-elected-leader failover; needs poc-up first.
+poc-smoke:
+	go build -o bin/oracache ./cmd/oracache
+	bash scripts/poc-smoke.sh

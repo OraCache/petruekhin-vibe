@@ -11,9 +11,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	controlplanev1 "github.com/OraCache/oracache/gen/controlplane/v1"
 	"github.com/OraCache/oracache/internal/cpapi"
@@ -23,14 +25,19 @@ import (
 )
 
 func newServer(store statestore.Store, logger *slog.Logger) *grpc.Server {
+	return serverWithAPI(cpapi.New(store, cpapi.WithLogger(logger)))
+}
+
+func serverWithAPI(api *cpapi.Server) *grpc.Server {
 	server := grpc.NewServer(grpc.MaxRecvMsgSize(16 << 20))
-	controlplanev1.RegisterControlPlaneAPIServer(server, cpapi.New(store, cpapi.WithLogger(logger)))
+	controlplanev1.RegisterControlPlaneAPIServer(server, api)
 	return server
 }
 
 func main() {
 	listen := flag.String("listen", "127.0.0.1:50052", "plaintext gRPC listen address (use port 0 for an ephemeral port)")
 	configPath := flag.String("config", "", "optional JSON config snapshot loaded into the in-memory store")
+	statusListen := flag.String("status-listen", "", "optional HTTP read-only config and leader hints at /heartbeats")
 	flag.Parse()
 	if flag.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, "unexpected positional arguments")
@@ -58,7 +65,18 @@ func main() {
 		logger.Error("listen", "address", *listen, "error", err)
 		os.Exit(1)
 	}
-	server := newServer(store, logger)
+	api := cpapi.New(store, cpapi.WithLogger(logger))
+	server := serverWithAPI(api)
+	if *statusListen != "" {
+		mux := http.NewServeMux()
+		mux.Handle("/heartbeats", statusHandler(api))
+		go func() {
+			srv := &http.Server{Addr: *statusListen, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+			if err := srv.ListenAndServe(); err != nil {
+				logger.Error("status server", "error", err)
+			}
+		}()
+	}
 
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
