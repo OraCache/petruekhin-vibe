@@ -1,9 +1,68 @@
 # OraCache
 
-> **Целевая архитектура:** [`docs/architecture/ARCHITECTURE.md`](docs/architecture/ARCHITECTURE.md).
-> Этот README описывает текущий упрощённый локальный MVP, а не целевую
-> геораспределённую систему. Отдельный target-срез Control Plane Phase 1
-> описан ниже и не меняет legacy-контракт.
+Подними три ноды хранилища на ноутбуке и отправляй запросы прямо в любую из них. Для этого стенда не нужны Control Plane, gateway или отдельная база данных.
+
+## Запустить кластер
+
+Нужны запущенный Docker с Compose и **Go 1.27.3** для клиентской команды и тестов. Все команды ниже запускай из корня репозитория.
+
+```sh
+docker compose -f compose.storage.yaml up -d --build
+docker compose -f compose.storage.yaml ps
+```
+
+Должны запуститься `node-1`, `node-2` и `node-3`. Их клиентские адреса: `127.0.0.1:28091`, `127.0.0.1:28092`, `127.0.0.1:28093` соответственно. Порты доступны только с твоего компьютера. Если нода не запустилась, посмотри `docker compose -f compose.storage.yaml logs --tail=50`.
+
+## Отправить запросы
+
+Сначала найди лидера. Номер ноды заранее неизвестен, а запись и чтение по умолчанию работают только через лидера:
+
+```sh
+for port in 28091 28092 28093; do
+  printf '\nПорт %s\n' "$port"
+  ORACACHE_ENDPOINT="127.0.0.1:$port" go run ./cmd/oracache get --timeout=2s demo:key || continue
+done
+```
+
+Лидер вернёт JSON: `GET_STATUS_MISS`, если ключ ещё не записан, или `GET_STATUS_HIT`, если он уже есть. Ответ `not leader` от реплики — норма. Если так отвечают все три ноды, подожди пару секунд и повтори. Если всё ещё нет JSON, проверь ошибки CLI, `docker compose -f compose.storage.yaml ps` и логи.
+
+Подставь порт лидера вместо `28091` и попробуй запись, чтение и удаление:
+
+```sh
+export ORACACHE_ENDPOINT=127.0.0.1:28091
+go run ./cmd/oracache put demo:key hello  # PUT_STATUS_OK
+go run ./cmd/oracache get demo:key       # GET_STATUS_HIT, data: aGVsbG8= (hello в base64)
+go run ./cmd/oracache delete demo:key    # DELETE_STATUS_DELETED
+go run ./cmd/oracache get demo:key       # GET_STATUS_MISS
+```
+
+Чтобы почитать с реплики, останови весь стенд командой ниже и запусти его заново с `ORACACHE_STORAGE_READ_MODE=local docker compose -f compose.storage.yaml up -d --build`. Попробуй `put demo:key hello` на трёх адресах, пока один не вернёт `PUT_STATUS_OK`: запись по-прежнему принимает только лидер, а `get` в этом режиме его не определяет. Затем выполни `get demo:key` на другом порту. Ожидается `GET_STATUS_HIT`; сразу после записи реплика может ещё вернуть `GET_STATUS_MISS`, тогда повтори чтение.
+
+## Остановить стенд
+
+```sh
+docker compose -f compose.storage.yaml down
+```
+
+Данные хранятся в памяти и при остановке всего стенда пропадают. Чтобы начать с чистого листа, останови и подними весь стенд заново. Не перезапускай одну остановленную ноду под тем же ID, пока остальные работают.
+
+## Запустить тесты
+
+Для `make`-команд нужен Make, для тестов с `-race` — включённый cgo и C-компилятор.
+
+```sh
+make test
+go test -race -count=1 -v ./internal/node -run '^TestStandaloneStorageCluster$'
+make test-e2e
+```
+
+`make test` запускает обычные тесты без Docker. Сквозной тест трёх нод тоже не требует Docker: он сам запускает ноды и проверяет репликацию, чтение и запись после смены лидера. `make test-e2e` проверяет локальный кэш без Raft, а не кластер. Для ручной проверки Docker-стенда пройди сценарий `put → get → delete → get` выше.
+
+---
+
+## Локальный кэш без Raft
+
+Обычный `docker compose up` запускает `cmd/gateway`. Этот сервер хранит данные в собственной памяти и не пересылает запросы в `storage-node`. Примеры и ограничения ниже относятся только к этому серверу, а не к Raft-стенду.
 
 Локальный Go CLI и синхронный in-memory gRPC сервер по
 [`proto/cache/gateway.proto`](proto/cache/gateway.proto). Реализованы все пять
@@ -21,7 +80,7 @@ RPC `CacheGateway`: `Get`, `Put`, `Delete`, `BatchGet`, `BatchPut`. CLI пред
 > Это тестовый сервер: **plaintext gRPC, без TLS и аутентификации**. По умолчанию
 > слушает только localhost; не публикуйте его в недоверенную сеть.
 
-## Быстрый запуск
+### Запуск локального кэша
 
 С Docker и Compose v2 достаточно:
 
@@ -82,7 +141,7 @@ printf '%s' 'bytes from stdin' | ./bin/oracache put other:key @-
 ./bin/oracache get profile:42            # MISS
 ```
 
-### Синтаксис CLI
+#### Синтаксис CLI
 
 ```text
 oracache get    [--rev=N] [--timeout=5s] KEY
@@ -116,7 +175,7 @@ MISS, VERSION_NOT_FOUND, CONFLICT, NOT_FOUND тоже возвращаются J
 кодом 0. Проверяйте поле `status`. Ошибки аргументов, файлов, превышение лимита
 на стороне CLI, недоступность сервера и ошибки gRPC дают ненулевой код выхода.
 
-## Семантика сервера
+### Семантика локального кэша
 
 - KEY — непустая строка. Некорректный ключ даёт gRPC `InvalidArgument`.
 - `Put` назначает возрастающие номера **отдельно для каждого ключа**, начиная с 1.
@@ -151,60 +210,13 @@ Go клиент и интерфейс сервера находятся в `gen/
 через `grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(16 << 20))`. Этот
 транспортный лимит независим от доменных лимитов payload и размера batch.
 
-## Control Plane Phase 1 (target code)
-
-Целевой Control Plane реализован отдельно от legacy-кеша и не меняет контракт
-`proto/cache/*`:
-
-- `proto/controlplane/v1/controlplane.proto` — `ControlPlaneAPI`
-  (`ReportHeartbeat`, `GetConfig`). Assignments регион-скоупные:
-  `(region, partition_id)` — отдельная локальная Raft-группа, у master и slave
-  независимые лидеры. Конфиг версионирован (`config_revision`/`known_revision`),
-  тело передаётся только при новой revision.
-- `internal/statestore` — граница `Store`; `MemoryStore` — временная Phase 1
-  реализация без etcd (TODO и ADR-001).
-- `internal/cpapi` — stateless gRPC API: принимает heartbeat, отдаёт snapshot.
-  Heartbeat — soft state; CP API не выводит из него лидеров и не содержит
-  placement-логики.
-- `internal/cpagent` — встроенный модуль `oracache-node`, не сайдкар:
-  heartbeat раз в 5 с, config pull раз в 10 с и немедленный pull, если
-  heartbeat вернул новую revision. Ошибки CP логируются и ретраятся; Data
-  Plane продолжает работать по last-known-good.
-- `internal/gateway` — target Router/Poller: `hash(key) % P` через xxhash64,
-  локальный лидер для GET и лидер master-региона для PUT, атомарная подмена
-  routing map. Legacy `cmd/gateway`/`internal/cache` не затронуты.
-- `internal/partition` — стабильный xxhash64 и fixed partition mapping.
-- `cmd/cp-api` — plaintext gRPC сервер; `-listen`, опциональный `-config`
-  с JSON snapshot.
-
-```sh
-make build
-./bin/cp-api -listen 127.0.0.1:50052
-# опционально: ./bin/cp-api -listen 127.0.0.1:50052 -config /path/to/cp.json
-```
-
-Без `-config` CP API принимает heartbeat, но не отдаёт routing map: assignments
-публикует владелец snapshot (в Phase 1 — bootstrap-файл, позже
-Controller/Scheduler через etcd). JSON использует поля `revision`,
-`partition_count`, `regions`, `nodes`, `partitions`; роль региона —
-`master`/`slave`. Валидация требует ровно один master-регион, полный набор
-assignments для каждого объявленного региона и лидера внутри его реплик.
-
-**Ограничение Phase 1:** состояние in-memory и теряется при рестарте CP API;
-etcd, Controller, Scheduler, CommandDispatcher и персистентный last-known-good
-ещё не реализованы. Это не production-режим. Решение и миграция —
-[ADR-001](docs/architecture/ADR-001-cp-phase1-in-memory-store.md).
-
-Тесты Phase 1 входят в `make test`: валидация конфига, монотонность revision,
-контракт CP API, циклы агента, routing map и e2e через настоящий loopback gRPC.
-
 ## Go workspace и модули
 
 В корне закоммичен `go.work` (Go 1.27.3), объединяющий четыре модуля:
 
 | Каталог | Module path | Назначение |
 | --- | --- | --- |
-| `.` | `github.com/OraCache/oracache` | legacy gateway/кеш и target CP/Gateway-пакеты |
+| `.` | `github.com/OraCache/oracache` | storage-нода и отдельный локальный gateway |
 | `gen` | `github.com/OraCache/oracache/gen` | сгенерированные protobuf/gRPC API |
 | `cmd/oracache` | `github.com/OraCache/oracache/cmd/oracache` | CLI и Kong |
 | `integration/e2e` | `github.com/OraCache/oracache/integration/e2e` | Docker/Compose и testcontainers |
@@ -212,7 +224,7 @@ etcd, Controller, Scheduler, CommandDispatcher и персистентный las
 У каждого модуля свои `go.mod`/`go.sum`. Testcontainers не входит в граф
 зависимостей gateway, CLI или protobuf; Kong нужен только CLI. Локальные
 `replace` связывают модули и без workspace. Из корня можно запускать
-`go run ./cmd/oracache --help`, `go run ./cmd/gateway` и `go run ./cmd/cp-api`.
+`go run ./cmd/oracache --help`, `go run ./cmd/gateway` и `go run ./cmd/storage-node --help`.
 `go test ./...` из корня **не обходит вложенные модули**: используйте `make test`.
 Make запускает тесты и vet каждого модуля с `GOWORK=off`, проверяя также его
 самостоятельную разрешимость. `make build` использует workspace.
@@ -223,14 +235,14 @@ Make запускает тесты и vet каждого модуля с `GOWORK
 ## Проверки и генерация
 
 ```sh
-make build                # bin/gateway, bin/oracache и bin/cp-api
-make test                 # root (legacy gateway + CP Phase 1) + protobuf + CLI, -race
-make test-gateway         # только корневой модуль (legacy gateway + CP Phase 1)
+make build                # в том числе bin/storage-node, bin/gateway и bin/oracache
+make test                 # корневой модуль, protobuf и CLI, с -race
+make test-gateway         # только корневой модуль
 make test-protobuf        # компиляция API; сейчас нет test cases
 make test-cli             # CLI, включая настоящий localhost gRPC
 make vet                  # три обычных модуля, без Docker
 make test-e2e             # отдельный модуль, нужен Docker daemon
-make generate             # или make gen; gen/gateway/v1 и gen/controlplane/v1
+make generate             # или make gen; генерация protobuf/gRPC
 make docker-build         # только сборка Docker образа
 make up                   # пересобрать и запустить Compose
 make down                 # остановить Compose
