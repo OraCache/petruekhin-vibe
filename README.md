@@ -1,9 +1,6 @@
 # OraCache
 
-> **Целевая архитектура:** [`docs/architecture/ARCHITECTURE.md`](docs/architecture/ARCHITECTURE.md).
-> Этот README описывает текущий упрощённый локальный MVP, а не целевую
-> геораспределённую систему. Отдельный target-срез Control Plane Phase 1
-> описан ниже и не меняет legacy-контракт.
+> [Архитектура и требования](docs/architecture/README.md) объясняют, что работает, какие решения приняты и что ещё обсуждается. Для запуска трёх узлов без CP и gateway используй [инструкцию из `main`](https://github.com/OraCache/OraCache/blob/842cca19950c6aba5a9ced467ca9d1a5fd641213/README.md). Команды ниже относятся к программам именно этой ветки.
 
 Локальный Go CLI и синхронный in-memory gRPC сервер по
 [`proto/cache/gateway.proto`](proto/cache/gateway.proto). Реализованы все пять

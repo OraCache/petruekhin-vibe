@@ -1,88 +1,32 @@
-# ADR: single-region, single-shard integration PoC
+# Интеграционный PoC: три процесса хранения и один шлюз
 
-Status: accepted for the `integration/poc` branch (local PoC, not a release design).
+Задача эксперимента — проследить запрос от CLI до реплицированного хранилища и проверить, вернётся ли клиент к работе через тот же адрес после остановки лидера. [Рамка PoC](REQUIREMENTS.md#r-004) — один регион, один шард (partition 0), три процесса хранения, один управляющий процесс (CP) и один gateway. Состав Raft статический, состояние хранится только в памяти. Это не состав первого выпуска: WAN, динамический состав, TTL, планировщик, балансировка размещения, TLS, аутентификация и квоты в эксперимент не входят. [ADR о границах PoC](adr/ADR-004-poc.md) фиксирует рамку, а не утверждает окончательный CP или discovery (E-017).
 
-## Scope
-
-Exactly one region, one shard (partition 0), three storage-node **processes**,
-one control plane (CP) process and one gateway process. Raft membership is
-static and in memory only: there is no disk persistence and a stopped node is
-not restarted into the group (a Raft member that loses term/vote must not
-rejoin under the same ID). Out of scope: multi-region replication, dynamic
-membership, TTL, scheduling/rebalancing and production hardening (TLS, auth,
-quotas).
-
-## Components and boundaries
+## Путь запроса в статическом варианте
 
 ```
-CLI --gRPC--> gateway --gRPC (forward, bounded retry)--> storage node (any of 3)
-                 |                                           |
-                 +--- polls GetConfig --> CP <-- heartbeat --+
-storage node = [ gRPC adapter -> shardraft.Instance -> versioned LRU store ]
-                 ^ Raft messages over HTTP between the three processes
+CLI --gRPC--> gateway --gRPC--> storage: gRPC → Raft → store
+                 |                 |          ↕ HTTP между тремя peers
+                 +-- GetConfig → CP ← heartbeat
 ```
 
-* **Storage node** (`cmd/storage-node`, package `internal/node`): a module
-  inside each storage process that wraps the store and the shard Raft member.
-  It owns config/constructors, the gRPC server delegating to
-  `shardraft.GatewayServer`, the HTTP Raft transport, the CP-agent heartbeat
-  (reporting the real `shardraft.Status`) and lifecycle. There is **no new
-  network service between Raft and the store**; the store is called in-process
-  from Raft apply.
-* **Raft** (`shardraft`, `go.etcd.io/raft/v3`): reused unchanged in protocol and
-  algorithm. The default read mode stays `Linearizable` (leader ReadIndex).
-* **Store** (`internal/store`): the versioned LRU store is the final backend.
-  A thin adapter (`internal/node`, new files) implements `shardraft.StateMachine`
-  on top of it; the legacy `internal/cache` stays for the existing gateway.
-* **CP** (`cmd/cp-api`, `internal/cp*`, `internal/statestore`): reused from the
-  earlier CP implementation (commit c8e28c7, owner-confirmed as valid).
-  Static bootstrap config from `deploy/poc/cp.json`, mounted read-only in Compose.
-  Heartbeats are **soft state** and do not mutate assignments or config revision;
-  CP is not a scheduler. They separately update term-ordered leader hints, served
-  even at unchanged config revision. See [routing ADR](ADR-poc-static-leader-hints.md),
-  which supersedes the intermediate leased-discovery mode.
-* **Gateway** (`cmd/cache-gateway`): the existing `internal/gateway` router only
-  resolves addresses, so a forwarding layer is added. It forwards Get/Put/
-  Delete (and batches) to the CP-observed leader (otherwise the static assigned
-  leader) and fails over using the **actual Raft `NOT_LEADER` hint** and other
-  configured regional replicas, within a fixed attempt count and overall deadline.
-  Learned and NOT_LEADER addresses must belong to that static regional assignment.
-  The last successful address is remembered per region/partition until CP's
-  term/node or resolved target changes; an identical refresh does not discard it.
-  CP outages do not expire routes. Hints are advisory: Raft still verifies quorum
-  and authority for linearizable operations. No read round-robin is implemented.
+- `cmd/storage-node` и `internal/node` собирают хранилище, Raft, сервер gRPC (`shardraft.GatewayServer`), HTTP-транспорт Raft и heartbeat-агент, передающий `shardraft.Status`. Модуль управляет запуском и остановкой процесса. Raft при применении команды вызывает store **внутри процесса**, без промежуточного сетевого сервиса.
+- `shardraft` использует `go.etcd.io/raft/v3`; подключение адаптера не меняет алгоритм Raft. По умолчанию чтение линейризуемое: лидер использует ReadIndex. Адаптер `shardraft.StateMachine` вызывает версионное хранилище `internal/store`. Старый `internal/cache` остаётся отдельной реализацией для прежнего gateway.
+- `cmd/cp-api`, `internal/cp*` и `internal/statestore` используют более раннюю реализацию CP (`c8e28c7`). CP читает `deploy/poc/cp.json`, смонтированный только для чтения в Compose. Heartbeat не переписывает назначения и ревизию файла: он обновляет отдельное наблюдение о лидере, которое gateway получает даже при неизменной ревизии. CP не выполняет работу планировщика. [Статический вариант](ADR-poc-static-leader-hints.md) появился после [эксперимента с истекающими адресами](ADR-poc-heartbeat-discovery.md).
+- В `cmd/cache-gateway` маршрутизатор определяет адреса, а отдельный компонент Forwarder пересылает Get, Put, Delete и пакетные операции. При неизменной подсказке и той же цели маршрута gateway сначала пробует последний успешный адрес этого шарда в нужном регионе. Без такого предпочтения он пробует наблюдаемого лидера (если пригодной подсказки нет — назначенного картой), затем остальные настроенные реплики. Смена наблюдения или цели маршрута лишает старое предпочтение силы. Перед каждой попыткой адрес сверяется с текущим назначением. При недоступности CP маршруты не истекают. Перебор при отказе не распределяет последовательные чтения по кругу. Право выполнить линейризуемую операцию проверяет Raft, а не CP.
 
-## Key decisions
+## Решения внутри эксперимента
 
-1. **Deterministic eviction.** `Store.Get` promotes the key in the LRU, but Raft
-   serves reads locally on one node while all writes replicate: this would make
-   LRU order, and therefore eviction, diverge between replicas. State-machine
-   reads use a non-touching `Peek`. LRU order is therefore driven by writes only
-   (Put and Delete) and eviction happens only inside Put apply. This is an
-   explicit PoC semantic: reading a key does not keep it alive.
-2. **Checkpoint/Restore** is added to the store (separate commit): it captures
-   versions, the global revision sequence, LRU order and the configuration
-   consistently, in memory only; Restore validates before replacing state.
-3. **Revisions.** The protobuf contract says the cache assigns `rev` and
-   `expected_rev` compares with the latest revision (0 = key absent). The store
-   uses one global, monotonic sequence instead of the legacy per-key counter.
-   This satisfies the contract (revisions of a key strictly increase and are
-   never reused, including after delete and restore) but `rev` values are not
-   dense per key.
-4. **Retry safety.** NOT_LEADER is a guaranteed pre-proposal refusal and is
-   always retried. Transport failures may be ambiguous for writes; an
-   unconditional Put retried after such a failure may create an extra version.
-   A conditional Put (`expected_rev`) cannot mutate twice, but it does not give
-   exactly-once semantics either: if the first attempt committed and the reply
-   was lost, the retry reports `CONFLICT` (or a newer revision), and the
-   original outcome cannot be recovered. There is no request-ID deduplication;
-   callers must treat ambiguous failures as "unknown" and re-read.
-5. **Process-level failover.** Killing the leader process leaves a 2-of-3
-   quorum, which elects a new leader; the same gateway endpoint resumes
-   serving. Data written before the kill remains readable (it was replicated).
+**Вытеснение.** `Store.Get` поднимает ключ в очереди LRU (давно не использованные ключи вытесняются первыми). Чтения на одной реплике изменили бы порядок только у неё. Поэтому адаптер читает через `Peek`: [порядок вытеснения меняют записи, не чтения](REQUIREMENTS.md#r-014). Put и Delete меняют очередь; само вытеснение происходит при применении Put.
 
-## Consequences
+**Контрольная копия и ревизии.** Checkpoint сохраняет версии, глобальный счётчик ревизий, порядок LRU и конфигурацию. Restore проверяет копию до замены состояния. Кэш назначает `rev`; `expected_rev` сравнивается с последней ревизией (0 означает отсутствие ключа). Общий монотонный счётчик не переиспользует номера при удалении и последующем восстановлении из согласованной копии; номера отдельного ключа могут идти с пропусками. Копия находится в RAM: [нельзя вернуть потерявший term и vote процесс под его старым peer ID в выжившую группу](REQUIREMENTS.md#r-019).
 
-Dependency and toolchain versions stay as on `main` (Go 1.27.3). The Go
-workspace modules (root, `gen`, `cmd/oracache`, `integration/e2e`) stay separate
-and are each tested. Local demo ports are in the 28080+ range.
+**Повторы.** Для Get, Put и Delete отказ `NOT_LEADER` до передачи команды в Raft допускает повтор; адрес из ответа используется только для назначенной реплики. При `Unavailable` gateway может повторить любую из трёх операций. Для записи это неоднозначный исход: потеря ответа не означает, что Put или Delete не применился. При `DeadlineExceeded` отдельной попытки можно повторить Get, но не Put или Delete. Все повторы ограничены числом попыток и общим сроком запроса. Безусловный Put может создать лишнюю версию. Повтор условного Put после успешной первой попытки может вернуть `CONFLICT`, а не первоначальный результат. Дедупликации по ID запроса нет; [неизвестный исход записи](REQUIREMENTS.md#r-011) требует сверки состояния и не даёт exactly-once.
+
+## Что показал стенд
+
+После остановки лидера две оставшиеся реплики образовали большинство, избрали преемника и обслужили запросы через прежний gateway. Это [проверка локального отказа процесса](REQUIREMENTS.md#r-024), а не восстановления с диска. Результаты статического варианта и точные срезы — в [отчёте](STATIC-LEADER-VERIFICATION.md). В историческом окружении использовались Go 1.27.3 и порты из диапазона 28080+; модули root, `gen`, `cmd/oracache`, `integration/e2e` проверялись отдельно.
+
+## Чтение напрямую с узла
+
+Отдельно от интеграционного стенда, срез standalone storage `842cca19950c6aba5a9ced467ca9d1a5fd641213` позволяет обращаться прямо к узлу без CP и gateway. Режим задаётся [при запуске процесса](https://github.com/OraCache/OraCache/blob/842cca19950c6aba5a9ced467ca9d1a5fd641213/cmd/storage-node/main.go): `--read-mode=linearizable` по умолчанию требует лидера, `local` разрешает чтение уже применённого состояния follower, которое может отставать. [TestStandaloneStorageCluster](https://github.com/OraCache/OraCache/blob/842cca19950c6aba5a9ced467ca9d1a5fd641213/internal/node/storage_cluster_test.go) описывает оба режима на трёх узлах в одном процессе с настоящими HTTP и gRPC. Это другой путь запроса, не Compose smoke через gateway.

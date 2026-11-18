@@ -51,7 +51,7 @@
   },
   {
     "evidence_id": "E-011",
-    "title": "Региональный поток и контракт ACK: предложение",
+    "title": "Региональный поток: предложение протокола; async outbox подтверждён отдельно",
     "access": "Private evidence retained separately; no permission to publish provenance implied."
   },
   {
@@ -77,6 +77,16 @@
   {
     "evidence_id": "E-016",
     "title": "Свежий fork CI: предоставленное ранее проверенное свидетельство",
+    "access": "Private evidence retained separately; no permission to publish provenance implied."
+  },
+  {
+    "evidence_id": "E-017",
+    "title": "Текущее уточнение: принятые механизмы и открытый CP/discovery",
+    "access": "Private evidence retained separately; no permission to publish provenance implied."
+  },
+  {
+    "evidence_id": "E-018",
+    "title": "Эксперимент статического CP: срезы и унаследованные проверки",
     "access": "Private evidence retained separately; no permission to publish provenance implied."
   }
 ]
