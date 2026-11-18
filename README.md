@@ -190,8 +190,7 @@ assignments для каждого объявленного региона и л�
 
 **Ограничение Phase 1:** состояние in-memory и теряется при рестарте CP API;
 etcd, Controller, Scheduler, CommandDispatcher и персистентный last-known-good
-ещё не реализованы. Это не production-режим. Решение и миграция —
-[ADR-001](docs/architecture/ADR-001-cp-phase1-in-memory-store.md).
+ещё не реализованы. Это не production-режим. [Реализация хранилища в памяти](internal/statestore/memory.go); варианты долговременного хранения управляющей информации обсуждаются в [RFC о топологии](docs/architecture/rfc/RFC-004-topology.md).
 
 Тесты Phase 1 входят в `make test`: валидация конфига, монотонность revision,
 контракт CP API, циклы агента, routing map и e2e через настоящий loopback gRPC.
@@ -199,11 +198,8 @@ etcd, Controller, Scheduler, CommandDispatcher и персистентный las
 ## Single-shard PoC (ветка integration/poc)
 
 Один регион, один шард, три отдельных процесса storage-node (статический
-состав Raft, только память), CP и forwarding-gateway. Архитектура и решения —
-[ADR](docs/architecture/ADR-poc-single-shard-integration.md).
-Статическая конфигурация и heartbeat leader hints —
-[ADR](docs/architecture/ADR-poc-static-leader-hints.md). Он заменяет прежний
-[leased discovery](docs/architecture/ADR-poc-heartbeat-discovery.md), который удалён из реализации.
+состав Raft, только память), CP и forwarding-gateway. [Устройство интеграционного стенда](docs/architecture/experiments/single-shard-integration.md).
+На этом стенде [статическая карта с подсказками о лидере](docs/architecture/experiments/static-leader-hints.md) заменила [каталог адресов со сроком действия](docs/architecture/experiments/heartbeat-discovery.md). Оба варианта — эксперименты.
 
 ```text
 CLI → gateway (28080) → любая из 3 нод → shardraft.Instance → versioned LRU store
