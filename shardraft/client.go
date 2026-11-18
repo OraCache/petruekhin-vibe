@@ -33,8 +33,7 @@ func (n *Instance) call(ctx context.Context, op operation, message proto.Message
 	if !n.Status().Running {
 		return nil, unavailable("instance is not running")
 	}
-	read, _ := message.(interface{ GetAllowStale() bool })
-	r := request{ctx: ctx, op: op, data: data, allowStale: read != nil && read.GetAllowStale(), reply: make(chan result, 1)}
+	r := request{ctx: ctx, op: op, data: data, reply: make(chan result, 1)}
 	select {
 	case n.requests <- r:
 	case <-ctx.Done():
