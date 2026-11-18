@@ -11,6 +11,7 @@ import (
 
 	pb "github.com/OraCache/oracache/gen/gateway/v1"
 	"github.com/OraCache/oracache/internal/node"
+	"github.com/OraCache/oracache/shardraft"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -18,7 +19,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-func listen(t *testing.T) net.Listener {
+func storageListen(t *testing.T) net.Listener {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -29,6 +30,12 @@ func listen(t *testing.T) net.Listener {
 }
 
 func TestStandaloneStorageCluster(t *testing.T) {
+	t.Run("linearizable", func(t *testing.T) { testStandaloneStorageCluster(t, shardraft.Linearizable) })
+	t.Run("local", func(t *testing.T) { testStandaloneStorageCluster(t, shardraft.Local) })
+}
+
+func testStandaloneStorageCluster(t *testing.T, mode shardraft.ReadMode) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	var grpcLis, raftLis [3]net.Listener
@@ -38,11 +45,11 @@ func TestStandaloneStorageCluster(t *testing.T) {
 	var peers []node.Peer
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
 	for i := range nodes {
-		grpcLis[i], raftLis[i] = listen(t), listen(t)
+		grpcLis[i], raftLis[i] = storageListen(t), storageListen(t)
 		peers = append(peers, node.Peer{ID: uint64(i + 1), NodeID: fmt.Sprintf("node-%d", i+1), ClientAddr: grpcLis[i].Addr().String(), RaftURL: "http://" + raftLis[i].Addr().String() + "/raft"})
 	}
 	for i := range nodes {
-		n, err := node.New(node.Config{NodeID: peers[i].NodeID, Region: "region-a", GroupID: "standalone-test", PeerID: peers[i].ID, Peers: peers, GRPCListener: grpcLis[i], RaftListener: raftLis[i], Logger: quiet, TickInterval: 20 * time.Millisecond, ElectionTicks: 10})
+		n, err := node.New(node.Config{NodeID: peers[i].NodeID, Region: "region-a", GroupID: "standalone-test", PeerID: peers[i].ID, Peers: peers, GRPCListener: grpcLis[i], RaftListener: raftLis[i], ReadMode: mode, Logger: quiet, TickInterval: 20 * time.Millisecond, ElectionTicks: 10})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -120,18 +127,20 @@ func TestStandaloneStorageCluster(t *testing.T) {
 		ticker.Stop()
 		_, err := client.Put(ctx, &pb.PutRequest{Key: "k", Data: []byte("must not write")})
 		assertHint(err, peers[first].ClientAddr)
-		_, err = client.Get(ctx, &pb.GetRequest{Key: "k"})
-		assertHint(err, peers[first].ClientAddr)
-		got, err := client.Get(ctx, &pb.GetRequest{Key: "k", AllowStale: true})
+		got, err := client.Get(ctx, &pb.GetRequest{Key: "k"})
+		if mode == shardraft.Linearizable {
+			assertHint(err, peers[first].ClientAddr)
+			_, err = client.BatchGet(ctx, &pb.BatchGetRequest{Items: []*pb.GetRequest{{Key: "k"}}})
+			assertHint(err, peers[first].ClientAddr)
+			continue
+		}
 		if err != nil || string(got.GetData()) != "v1" {
-			t.Fatalf("allow_stale Get: %v %v", got, err)
+			t.Fatalf("local Get: %v %v", got, err)
 		}
-		batch, err := client.BatchGet(ctx, &pb.BatchGetRequest{Items: []*pb.GetRequest{{Key: "k"}}, AllowStale: true})
+		batch, err := client.BatchGet(ctx, &pb.BatchGetRequest{Items: []*pb.GetRequest{{Key: "k"}}})
 		if err != nil || len(batch.GetItems()) != 1 || string(batch.GetItems()[0].GetData()) != "v1" {
-			t.Fatalf("allow_stale BatchGet: %v %v", batch, err)
+			t.Fatalf("local BatchGet: %v %v", batch, err)
 		}
-		_, err = client.BatchGet(ctx, &pb.BatchGetRequest{Items: []*pb.GetRequest{{Key: "k"}}})
-		assertHint(err, peers[first].ClientAddr)
 	}
 	nodes[first].Close()
 	if err := <-done[first]; err != nil {
@@ -140,7 +149,7 @@ func TestStandaloneStorageCluster(t *testing.T) {
 	next := leader(first)
 	got, err := clients[next].Get(ctx, &pb.GetRequest{Key: "k"})
 	if err != nil || string(got.GetData()) != "v1" {
-		t.Fatalf("strict Get after election: %v %v", got, err)
+		t.Fatalf("Get after election: %v %v", got, err)
 	}
 	write(next, "v2")
 }

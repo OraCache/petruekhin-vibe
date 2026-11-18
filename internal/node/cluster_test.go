@@ -22,6 +22,15 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
+func listen(t *testing.T) net.Listener {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return l
+}
+
 type poc struct {
 	nodes    []*node.Node
 	runDone  []chan error

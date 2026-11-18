@@ -40,12 +40,13 @@ type Peer struct {
 }
 
 type Config struct {
-	NodeID  string
-	Region  string
-	ShardID uint32
-	GroupID string // identifies this incarnation of the group
-	PeerID  uint64
-	Peers   []Peer
+	NodeID   string
+	Region   string
+	ShardID  uint32
+	GroupID  string // identifies this incarnation of the group
+	PeerID   uint64
+	Peers    []Peer
+	ReadMode shardraft.ReadMode // zero value: Linearizable
 
 	// Listen addresses; ignored when the matching Listener is supplied.
 	GRPCAddr     string
@@ -122,7 +123,7 @@ func New(cfg Config) (*Node, error) {
 	}
 	n.inst, err = shardraft.NewInstance(shardraft.Config{
 		RegionID: cfg.Region, ShardID: cfg.ShardID, GroupID: cfg.GroupID,
-		PeerID: cfg.PeerID, Peers: raftPeers,
+		PeerID: cfg.PeerID, Peers: raftPeers, ReadMode: cfg.ReadMode,
 		TickInterval: cfg.TickInterval, ElectionTicks: cfg.ElectionTicks,
 		RequestTimeout: cfg.RequestTimeout, SnapshotEntries: cfg.SnapshotEntries,
 		Logger: &raft.DefaultLogger{Logger: log.New(io.Discard, "", 0)},
