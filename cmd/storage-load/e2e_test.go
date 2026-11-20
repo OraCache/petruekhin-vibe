@@ -2,7 +2,9 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
@@ -21,11 +23,11 @@ type fixture struct {
 }
 
 func (fixture) Put(context.Context, *pb.PutRequest) (*pb.PutResponse, error) {
-	return &pb.PutResponse{Status: pb.PutStatus_PUT_STATUS_OK}, nil
+	return &pb.PutResponse{Status: pb.PutStatus_PUT_STATUS_OK, ServedBy: &pb.ServedBy{Instance: "leader"}}, nil
 }
 
 func (fixture) Get(context.Context, *pb.GetRequest) (*pb.GetResponse, error) {
-	return &pb.GetResponse{Status: pb.GetStatus_GET_STATUS_HIT, Data: make([]byte, payloadSize)}, nil
+	return &pb.GetResponse{Status: pb.GetStatus_GET_STATUS_HIT, Data: make([]byte, payloadSize), ServedBy: &pb.ServedBy{Instance: "leader"}}, nil
 }
 
 func TestLoadMetrics(t *testing.T) {
@@ -41,7 +43,9 @@ func TestLoadMetrics(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestRunLoadProcess$", "--",
-		"-nodes="+ln.Addr().String(), "-read-rps=100", "-step=2s", "-catch-up", "-metrics-listen=127.0.0.1:0")
+		"-gateway="+ln.Addr().String(), "-read-rps=100", "-step=2s", "-catch-up", "-metrics-listen=127.0.0.1:0")
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -103,6 +107,17 @@ func TestLoadMetrics(t *testing.T) {
 	}
 	if err := cmd.Wait(); err != nil {
 		t.Fatal(err)
+	}
+	dec := json.NewDecoder(&stdout)
+	for _, op := range []string{"Get", "Put"} {
+		var got row
+		if err := dec.Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got.Case != "gateway" || got.Op != op || got.Outcomes["ok"] == 0 ||
+			got.PerNode[ln.Addr().String()] != got.Outcomes["ok"] || got.ServedBy["leader"] != got.Outcomes["ok"] {
+			t.Fatalf("wrong gateway %s result: %+v", op, got)
+		}
 	}
 }
 

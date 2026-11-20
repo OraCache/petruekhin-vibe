@@ -1,4 +1,4 @@
-// storage-load measures direct unary gRPC against a disposable storage cluster.
+// storage-load measures unary gRPC against a disposable OraCache cluster.
 package main
 
 import (
@@ -49,9 +49,10 @@ const lateThreshold = 5 * time.Millisecond
 func dropLate(delay time.Duration, catchUp bool) bool { return !catchUp && delay > lateThreshold }
 
 type result struct {
-	class   string
-	latency time.Duration
-	late    bool
+	class    string
+	servedBy string
+	latency  time.Duration
+	late     bool
 }
 type row struct {
 	Case      string         `json:"case"`
@@ -64,6 +65,7 @@ type row struct {
 	P99       float64        `json:"p99_ms"`
 	Outcomes  map[string]int `json:"outcomes"`
 	PerNode   map[string]int `json:"sent_per_node"`
+	ServedBy  map[string]int `json:"responses_per_instance,omitempty"`
 	LateSent  int            `json:"sent_over_5ms_late"`
 }
 
@@ -80,31 +82,31 @@ type load struct {
 	metrics  [2]*operationMetrics
 }
 
-func (l *load) call(o operation) string {
+func (l *load) call(o operation) (class, instance string) {
 	ctx, cancel := context.WithTimeout(context.Background(), l.timeout)
 	defer cancel()
 	c := l.clients[o.node]
 	if o.write {
 		p, e := c.Put(ctx, l.put[o.key])
 		if e != nil {
-			return classify(e)
+			return classify(e), ""
 		}
 		if p.GetStatus() == pb.PutStatus_PUT_STATUS_OK {
-			return "ok"
+			return "ok", p.GetServedBy().GetInstance()
 		}
-		return p.GetStatus().String()
+		return p.GetStatus().String(), p.GetServedBy().GetInstance()
 	}
 	p, e := c.Get(ctx, l.get[o.key])
 	if e != nil {
-		return classify(e)
+		return classify(e), ""
 	}
 	if p.GetStatus() != pb.GetStatus_GET_STATUS_HIT {
-		return p.GetStatus().String()
+		return p.GetStatus().String(), p.GetServedBy().GetInstance()
 	}
 	if len(p.GetData()) != payloadSize {
-		return "bad_payload_size"
+		return "bad_payload_size", p.GetServedBy().GetInstance()
 	}
-	return "ok"
+	return "ok", p.GetServedBy().GetInstance()
 }
 
 func classify(e error) string {
@@ -125,7 +127,7 @@ func (l *load) prepare() error {
 	l.leader = -1
 	for l.leader < 0 && time.Now().Before(deadline) {
 		for i := range l.clients {
-			if l.call(operation{write: true, node: i}) == "ok" {
+			if c, _ := l.call(operation{write: true, node: i}); c == "ok" {
 				l.leader = i
 				break
 			}
@@ -135,10 +137,10 @@ func (l *load) prepare() error {
 		}
 	}
 	if l.leader < 0 {
-		return errors.New("no node accepted seed Put")
+		return errors.New("no endpoint accepted seed Put")
 	}
 	for i := 1; i < len(l.put); i++ {
-		if c := l.call(operation{write: true, node: l.leader, key: i}); c != "ok" {
+		if c, _ := l.call(operation{write: true, node: l.leader, key: i}); c != "ok" {
 			return fmt.Errorf("prefill key %d: %s", i, c)
 		}
 	}
@@ -150,12 +152,15 @@ func (l *load) prepare() error {
 		}
 		deadline := time.Now().Add(3 * time.Second)
 		for {
-			c := l.call(operation{node: n, key: len(l.get) - 1})
+			c, _ := l.call(operation{node: n, key: len(l.get) - 1})
 			if c == "ok" {
 				break
 			}
 			if time.Now().After(deadline) {
-				return fmt.Errorf("read probe on %s: %s (RR requires -read-mode=local on all nodes)", l.nodes[n], c)
+				if l.rr {
+					return fmt.Errorf("read probe on %s: %s (RR requires -read-mode=local on all nodes)", l.nodes[n], c)
+				}
+				return fmt.Errorf("read probe on %s: %s", l.nodes[n], c)
 			}
 			time.Sleep(50 * time.Millisecond)
 		}
@@ -206,9 +211,9 @@ func (l *load) step(name string, rate int, d time.Duration) []row {
 				go func() {
 					defer wg.Done()
 					defer func() { <-sem }()
-					c := l.call(o)
+					c, instance := l.call(o)
 					latency := time.Since(planned)
-					out[i] = result{class: c, latency: latency, late: late}
+					out[i] = result{class: c, servedBy: instance, latency: latency, late: late}
 					if m != nil {
 						m.completed.WithLabelValues(c).Inc()
 						if c == "ok" {
@@ -240,6 +245,12 @@ func (l *load) step(name string, rate int, d time.Duration) []row {
 		a := &rows[j]
 		a.TargetRPS++
 		a.Outcomes[r.class]++
+		if r.servedBy != "" {
+			if a.ServedBy == nil {
+				a.ServedBy = map[string]int{}
+			}
+			a.ServedBy[r.servedBy]++
+		}
 		if r.class != "inflight_limit" && r.class != "scheduler_late" {
 			a.SentRPS++
 			if r.late {
@@ -270,7 +281,8 @@ func (l *load) step(name string, rate int, d time.Duration) []row {
 
 func run() error {
 	addresses := flag.String("nodes", "", "comma-separated storage gRPC endpoints (disposable cluster only)")
-	mode := flag.String("case", "leader-local", "leader-linearizable, leader-local, or rr-local (must match storage flags)")
+	gateway := flag.String("gateway", "", "single API Gateway gRPC endpoint (disposable cluster only; excludes -nodes and -case)")
+	mode := flag.String("case", "", "direct storage mode: leader-linearizable, leader-local (default), or rr-local")
 	steps := flag.String("read-rps", "1000,2500,5000,7500,10000", "comma-separated Get RPS steps, multiples of 20; Put RPS is 1/20 of Get")
 	duration := flag.Duration("step", 10*time.Second, "duration per step (whole seconds)")
 	timeout := flag.Duration("timeout", time.Second, "per-RPC timeout")
@@ -278,8 +290,21 @@ func run() error {
 	catchUp := flag.Bool("catch-up", false, "launch overdue slots immediately, still subject to the inflight cap")
 	metricsAddr := flag.String("metrics-listen", "127.0.0.1:9091", "Prometheus HTTP listen address (empty disables metrics)")
 	flag.Parse()
-	if *addresses == "" || *duration < time.Second || *duration > time.Minute || *duration%time.Second != 0 || *timeout <= 0 || *inflight < 1 || (*mode != "leader-local" && *mode != "leader-linearizable" && *mode != "rr-local") {
+	if *duration < time.Second || *duration > time.Minute || *duration%time.Second != 0 || *timeout <= 0 || *inflight < 1 {
 		return errors.New("invalid flags; see -help")
+	}
+	if *gateway != "" {
+		if *addresses != "" || *mode != "" || strings.Contains(*gateway, ",") {
+			return errors.New("-gateway requires one endpoint and cannot be combined with -nodes or -case")
+		}
+		*addresses, *mode = *gateway, "gateway"
+	} else {
+		if *mode == "" {
+			*mode = "leader-local"
+		}
+		if *addresses == "" || (*mode != "leader-local" && *mode != "leader-linearizable" && *mode != "rr-local") {
+			return errors.New("specify -gateway or -nodes with a valid storage case; see -help")
+		}
 	}
 	var rates []int
 	for _, s := range strings.Split(*steps, ",") {
@@ -317,7 +342,7 @@ func run() error {
 	if e := l.prepare(); e != nil {
 		return e
 	}
-	log.Printf("case=%s leader=%s seed_keys=%d", *mode, l.nodes[l.leader], keysN)
+	log.Printf("case=%s write_endpoint=%s seed_keys=%d", *mode, l.nodes[l.leader], keysN)
 	_ = l.step(*mode, rates[0], time.Second)
 	if *metricsAddr != "" {
 		metrics, closeMetrics, err := serveMetrics(*metricsAddr)
