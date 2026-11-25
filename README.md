@@ -72,84 +72,32 @@ GOWORK=off go test -race -count=1 -v ./cmd/api-gateway \
 
 ### Мониторинг реального кластера
 
-Этот запуск поднимает Control Plane, API Gateway, три ноды одной Raft-группы,
-Prometheus и Grafana. Генератор работает на хосте из того же checkout.
-Нужны запущенный Docker с Compose, Go 1.27.3, Make, `curl` и `jq`.
-Выполняй команды из корня репозитория в одном терминале. Не запускай
-параллельно другой стенд на тех же портах. Если порт занят, задай свободный
-перед запуском, например `export ORACACHE_GRAFANA_PORT=33000`.
-
-#### 1. Запусти стенд
-
-Если проект `oracache-real` уже используется, перед запуском задай другое `COMPOSE_PROJECT_NAME`.
+Нужны Docker с Compose 2.24.4+ и Go 1.27.3. Из корня репозитория:
 
 ```sh
-export COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-oracache-real}
-export ORACACHE_CP_IMAGE="${COMPOSE_PROJECT_NAME}:local"
-export ORACACHE_CP_PORT=${ORACACHE_CP_PORT:-28080}
-export ORACACHE_CP_STATUS_PORT=${ORACACHE_CP_STATUS_PORT:-9466}
-export ORACACHE_PROMETHEUS_PORT=${ORACACHE_PROMETHEUS_PORT:-9090}
-export ORACACHE_GRAFANA_PORT=${ORACACHE_GRAFANA_PORT:-3000}
-
-compose_demo() {
-  docker compose -f compose.cp.yaml -f compose.cp-observability.yaml "$@"
-}
-compose_demo build api-gateway
-compose_demo up -d --no-build
+docker compose -f compose.demo.yaml up --build --wait
+go run ./cmd/storage-load -gateway=127.0.0.1:28080
 ```
 
-Сборка `api-gateway` один раз собирает общий образ Gateway, CP и нод.
+После `up --wait` можно открыть [Grafana](http://127.0.0.1:33000/d/oracache-mvp)
+без логина. Compose сам проверяет, что есть маршруты чтения и записи через
+Gateway, Prometheus собирает метрики со всех пяти целей, а дашборд доступен.
+[Диагностика кластера](http://127.0.0.1:33000/d/oracache-real-cluster) — отдельный дашборд.
 
-#### 2. Дождись готовности
+Генератор печатает итог GET и PUT прямо в терминал каждые 20 секунд: три
+ступени по 1000 GET/с и 50 PUT/с. Grafana показывает серверные метрики,
+а задержку и пропуски на стороне клиента смотри в выводе генератора.
+Генератор пишет в кэш — запускай только на тестовом стенде.
+
+Остановка (удалит историю метрик этого демо):
 
 ```sh
-curl -fsS "http://127.0.0.1:${ORACACHE_CP_STATUS_PORT}/routes" |
-  jq -e '.read_routes["0"] and .write_routes["0"]'
-curl -fsS "http://127.0.0.1:${ORACACHE_PROMETHEUS_PORT}/api/v1/targets" |
-  jq -e '[.data.activeTargets[] | select(.labels.job | IN("api-gateway", "cp-api", "storage-node"))]
-    | length == 5 and all(.[]; .health == "up")'
+docker compose -f compose.demo.yaml down --volumes
 ```
-
-Обе команды должны вывести `true`: Gateway получил маршруты чтения и записи,
-а Prometheus уже опросил Gateway, CP и три ноды. Если ещё не готово, повтори
-через несколько секунд. Если не помогает: `compose_demo ps` и `compose_demo logs --tail=50`.
-
-#### 3. Открой Grafana и запусти нагрузку
-
-Для портов по умолчанию (если менял порт, подставь его в ссылку):
-
-- [Обзор кластера](http://127.0.0.1:3000/d/oracache-mvp) — завершённые RPC, ошибки gRPC, hit rate и p95/p99 обработчика Gateway, роли нод и итоги выбранного интервала. Использует только серверные метрики. Если запросов нет, RPS нулевой, а процентили и hit rate не определены.
-- [Диагностика кластера](http://127.0.0.1:3000/d/oracache-real-cluster) — Gateway, CP, Raft и ресурсы с фильтром по storage-ноде.
-- [Цели сбора Prometheus](http://127.0.0.1:9090/targets)
-
-Открой «Обзор кластера». Затем запусти минутный прогон через Gateway:
-цель — 1000 GET/с и 50 PUT/с. Генератор пишет в кэш: запускай только на тестовом стенде.
-
-```sh
-mkdir -p .reports
-make -s run-gateway GATEWAY="127.0.0.1:${ORACACHE_CP_PORT}" \
-  ARGS='-read-rps=1000 -step=60s -metrics-listen=' > .reports/gateway.jsonl
-jq '{op, target_rps, sent_rps, ok_rps, outcomes, p99_ms}' .reports/gateway.jsonl
-```
-
-Во время прогона на графике Gateway должен появиться трафик. Если график пуст,
-выбери интервал, включающий прогон, и обнови его после очередного опроса Prometheus.
-После прогона в JSONL будут две строки: GET и PUT. Сравни `target_rps`, `sent_rps`
-и `ok_rps`, а причины смотри в `outcomes`. Grafana показывает серверные метрики;
-пропуски и задержка на стороне генератора остаются в JSONL.
-
-#### 4. Останови стенд
-
-```sh
-compose_demo down --volumes
-```
-
-Эта команда удаляет данные тестового проекта, включая историю метрик.
-Скопируй нужные графики до остановки. Файл `.reports/gateway.jsonl` останется на хосте.
 
 #### Проверка отказа лидера (отдельный сценарий)
 
-Если хочешь увидеть смену лидера, сделай это до остановки стенда. Запиши контрольное значение. Найди лидера по полю `NodeID` в `write_routes["0"]` и останови его командой `compose_demo stop <имя-ноды>`. Дождись нового лидера в `/routes`, прочитай ту же версию и сделай новую запись через прежний адрес Gateway. Выбери в Grafana интервалы до отказа, во время смены лидера и после восстановления по отдельности. Не запускай остановленную ноду обратно в живую группу: для следующего демо пересоздай весь стенд.
+Если хочешь увидеть смену лидера, сделай это до остановки стенда. Запиши контрольное значение. Найди лидера по полю `NodeID` в `write_routes["0"]` на `http://127.0.0.1:9466/routes` и останови его командой `docker compose -f compose.demo.yaml stop <имя-ноды>`. Дождись нового лидера в `/routes`, прочитай ту же версию и сделай новую запись через прежний адрес Gateway. Не запускай остановленную ноду обратно в живую группу: для следующего демо пересоздай весь стенд.
 
 Скрипт повторяет чистый запуск и три отказных сценария на отдельных проектах
 со свободными портами. Он требует Docker Compose, Go, `curl` и `jq`, выполняет

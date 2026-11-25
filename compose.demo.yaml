@@ -1,0 +1,56 @@
+name: oracache-demo
+
+x-cluster-image: &cluster-image
+  image: ${ORACACHE_CP_IMAGE:-oracache-demo:local}
+
+# Build the shared image once; the other cluster services only run it.
+x-cluster-service: &cluster-service
+  <<: *cluster-image
+  pull_policy: never
+
+services:
+  cp-api:
+    <<: *cluster-image
+    extends: {file: compose.cp.yaml, service: cp-api}
+  node-1:
+    <<: *cluster-service
+    extends: {file: compose.cp.yaml, service: node-1}
+    build: !reset null
+  node-2:
+    <<: *cluster-service
+    extends: {file: compose.cp.yaml, service: node-2}
+    build: !reset null
+  node-3:
+    <<: *cluster-service
+    extends: {file: compose.cp.yaml, service: node-3}
+    build: !reset null
+  api-gateway:
+    <<: *cluster-service
+    extends: {file: compose.cp.yaml, service: api-gateway}
+    build: !reset null
+  prometheus:
+    extends: {file: compose.cp-observability.yaml, service: prometheus}
+    # Wait for all five scrapes and both Gateway routes, not just an open port.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          promtool query instant http://127.0.0.1:9090
+          'count(up{job=~"api-gateway|cp-api|storage-node"} == 1) == 5
+          and count(oracache_gateway_partitions_without_route{job="api-gateway"} == 0) == 2'
+          | grep -q '^{} => 5 @'
+      interval: 2s
+      timeout: 2s
+      retries: 30
+  grafana:
+    extends: {file: compose.cp-observability.yaml, service: grafana}
+    ports: !override
+      - "127.0.0.1:${ORACACHE_GRAFANA_PORT:-33000}:3000"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, 'http://127.0.0.1:3000/api/dashboards/uid/oracache-mvp']
+      interval: 2s
+      timeout: 2s
+      retries: 30
