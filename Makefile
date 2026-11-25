@@ -1,6 +1,8 @@
-.PHONY: build docker-build test test-gateway test-protobuf test-cli vet gen generate test-e2e up down
+.PHONY: build docker-build test test-gateway test-protobuf test-cli vet gen generate test-e2e up down run-gateway
 
 .DEFAULT_GOAL := build
+
+GATEWAY ?= 127.0.0.1:28080
 
 GOTESTSUM_VERSION := v1.13.0
 GOTESTSUM := $(CURDIR)/.tools/bin/gotestsum-$(GOTESTSUM_VERSION)
@@ -18,6 +20,9 @@ build:
 	go build -o bin/cp-api ./cmd/cp-api
 	go build -o bin/oracache-node ./cmd/oracache-node
 	go build -o bin/api-gateway ./cmd/api-gateway
+
+run-gateway:
+	go run ./cmd/storage-load -gateway "$(GATEWAY)" $(ARGS)
 
 # Clear every expected report before even installing tools: an aborted run must
 # never publish an older module's results. Individual targets do the same.

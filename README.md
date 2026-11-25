@@ -94,10 +94,10 @@ curl -fsS "http://127.0.0.1:${ORACACHE_CP_STATUS_PORT}/routes"
 
 #### Нагрузка для демо (необязательно)
 
-После готовности маршрута запустите из отдельного checkout [`storage-load`](https://github.com/OraCache/petruekhin-vibe/tree/storage-load):
+После готовности маршрута запустите генератор из корня этого checkout (отдельный checkout не нужен):
 
 ```sh
-make -s run-gateway GATEWAY=127.0.0.1:28080 ARGS='-read-rps=1000 -step=60s' > gateway.jsonl
+make -s run-gateway GATEWAY=127.0.0.1:28080 ARGS='-read-rps=1000 -step=60s -metrics-listen=' > gateway.jsonl
 ```
 
 Нагрузчик пишет в кэш — запускайте только на тестовом стенде. Grafana показывает его запросы так же, как трафик любого другого клиента; Prometheus не собирает метрики генератора. Gateway не видит запросы, не дошедшие до него. Пропуски генератора и задержка на стороне клиента остаются в JSONL, а не на дашборде.
