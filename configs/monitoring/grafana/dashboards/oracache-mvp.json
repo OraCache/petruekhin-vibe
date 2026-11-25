@@ -260,7 +260,7 @@
       "id": 4,
       "type": "state-timeline",
       "title": "Роли и доступность нод",
-      "description": "Лидер определяется по наблюдаемому максимальному term; экспорт метрик не доказывает кворум или доступность маршрута. Пропуски не заполняются.",
+      "description": "Лидер определяется по наблюдаемому максимальному term. Роль follower не зависит от готовности или отставания применения. «Роль не определена» возможна при выборах или отсутствии метрик роли. Роль не доказывает кворум или доступность маршрута. Пропуски не заполняются.",
       "gridPos": {
         "x": 12,
         "y": 7,
@@ -292,12 +292,12 @@
                   "index": 0
                 },
                 "0": {
-                  "text": "Нет готовой роли",
+                  "text": "Роль не определена",
                   "color": "orange",
                   "index": 1
                 },
                 "1": {
-                  "text": "Готовая реплика",
+                  "text": "Ведомая реплика",
                   "color": "blue",
                   "index": 2
                 },
@@ -315,7 +315,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(2 * max by (instance) (oracache_raft_leader_at_max_term == 1) and on (instance) (up{job=\"storage-node\"} == 1))\nor on (instance) (max by (instance) ((oracache_raft_is_follower == 1) and (oracache_raft_ready == 1)) and on (instance) (up{job=\"storage-node\"} == 1))\nor on (instance) (0 * max by (instance) (up{job=\"storage-node\"} == 1))\nor on (instance) (-1 + 0 * max by (instance) (up{job=\"storage-node\"} == 0))",
+          "expr": "(2 * max by (instance) (oracache_raft_leader_at_max_term == 1) and on (instance) (up{job=\"storage-node\"} == 1))\nor on (instance) (max by (instance) (oracache_raft_is_follower == 1) and on (instance) (up{job=\"storage-node\"} == 1))\nor on (instance) (0 * max by (instance) (up{job=\"storage-node\"} == 1))\nor on (instance) (-1 + 0 * max by (instance) (up{job=\"storage-node\"} == 0))",
           "legendFormat": "{{instance}}",
           "datasource": {
             "type": "prometheus",
