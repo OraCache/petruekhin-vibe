@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,13 +21,17 @@ import (
 
 type fixture struct {
 	pb.UnimplementedCacheGatewayServer
+	keyThreeWrites atomic.Int32
 }
 
-func (fixture) Put(context.Context, *pb.PutRequest) (*pb.PutResponse, error) {
+func (f *fixture) Put(_ context.Context, req *pb.PutRequest) (*pb.PutResponse, error) {
+	if strings.HasSuffix(req.GetKey(), ":3") {
+		f.keyThreeWrites.Add(1)
+	}
 	return &pb.PutResponse{Status: pb.PutStatus_PUT_STATUS_OK, ServedBy: &pb.ServedBy{Instance: "leader"}}, nil
 }
 
-func (fixture) Get(context.Context, *pb.GetRequest) (*pb.GetResponse, error) {
+func (*fixture) Get(context.Context, *pb.GetRequest) (*pb.GetResponse, error) {
 	return &pb.GetResponse{Status: pb.GetStatus_GET_STATUS_HIT, Data: make([]byte, payloadSize), ServedBy: &pb.ServedBy{Instance: "leader"}}, nil
 }
 
@@ -36,14 +41,15 @@ func TestLoadMetrics(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := grpc.NewServer()
-	pb.RegisterCacheGatewayServer(server, fixture{})
+	f := &fixture{}
+	pb.RegisterCacheGatewayServer(server, f)
 	go server.Serve(ln)
 	t.Cleanup(server.Stop)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestRunLoadProcess$", "--",
-		"-gateway="+ln.Addr().String(), "-read-rps=100", "-step=2s", "-catch-up", "-metrics-listen=127.0.0.1:0")
+		"-gateway="+ln.Addr().String(), "-keys=7", "-read-rps=20,20", "-step=2s", "-catch-up", "-metrics-listen=127.0.0.1:0")
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	stderr, err := cmd.StderrPipe()
@@ -61,9 +67,11 @@ func TestLoadMetrics(t *testing.T) {
 	}()
 	lines := bufio.NewScanner(stderr)
 	var endpoint string
+	var seeded bool
 	for lines.Scan() {
 		line := lines.Text()
 		t.Log(line)
+		seeded = seeded || strings.HasSuffix(line, " seed_keys=7")
 		if _, addr, ok := strings.Cut(line, "metrics listening on "); ok {
 			endpoint = "http://" + addr + "/metrics"
 			break
@@ -71,6 +79,9 @@ func TestLoadMetrics(t *testing.T) {
 	}
 	if endpoint == "" {
 		t.Fatal("generator did not start a metrics listener")
+	}
+	if !seeded {
+		t.Fatal("generator did not report the requested seed key count")
 	}
 
 	for {
@@ -108,8 +119,12 @@ func TestLoadMetrics(t *testing.T) {
 	if err := cmd.Wait(); err != nil {
 		t.Fatal(err)
 	}
+	// Key 3 is written at prefill and only in the second measured stage.
+	if got := f.keyThreeWrites.Load(); got != 2 {
+		t.Fatalf("writes for key 3 = %d, want 2", got)
+	}
 	dec := json.NewDecoder(&stdout)
-	for _, op := range []string{"Get", "Put"} {
+	for _, op := range []string{"Get", "Put", "Get", "Put"} {
 		var got row
 		if err := dec.Decode(&got); err != nil {
 			t.Fatal(err)

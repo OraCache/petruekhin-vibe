@@ -26,7 +26,7 @@ func TestClassifyPendingLimit(t *testing.T) {
 func TestProfileAndRouting(t *testing.T) {
 	var reads [3]int
 	for i := 0; i < 10500; i++ {
-		a, b := request(i, 1, 3, false), request(i, 1, 3, true)
+		a, b := request(i, 1, 3, defaultKeys, false), request(i, 1, 3, defaultKeys, true)
 		if a.write != b.write || a.key != b.key || a.node != 1 {
 			t.Fatalf("workload changed at %d: %v %v", i, a, b)
 		}
@@ -40,6 +40,26 @@ func TestProfileAndRouting(t *testing.T) {
 	}
 	if reads != [3]int{3334, 3333, 3333} {
 		t.Fatal(reads)
+	}
+}
+
+func TestRequestCoversConfiguredKeys(t *testing.T) {
+	for _, keys := range []int{1, 21, 149, defaultKeys} {
+		gets, puts := make(map[int]bool), make(map[int]bool)
+		for i := 0; i < 21*keys; i++ {
+			o := request(i, 0, 1, keys, false)
+			if o.key < 0 || o.key >= keys {
+				t.Fatalf("key %d outside %d-key set", o.key, keys)
+			}
+			if o.write {
+				puts[o.key] = true
+			} else {
+				gets[o.key] = true
+			}
+		}
+		if len(gets) != keys || len(puts) != keys {
+			t.Fatalf("%d keys: GET used %d, PUT used %d", keys, len(gets), len(puts))
+		}
 	}
 }
 

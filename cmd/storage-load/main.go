@@ -24,7 +24,8 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-const keysN = 256
+const defaultKeys = 256
+const maxKeys = 10000
 const payloadSize = 10 * 1024
 
 type operation struct {
@@ -32,11 +33,14 @@ type operation struct {
 	key, node int
 }
 
-func request(i, leader, n int, rr bool) operation {
+func request(i, leader, n, keys int, rr bool) operation {
 	cycle, slot := i/21, i%21
+	if slot == 20 {
+		return operation{write: true, key: cycle % keys, node: leader}
+	}
 	readIndex := cycle*20 + slot
-	o := operation{write: slot == 20, key: (i * 149) % keysN, node: leader}
-	if rr && !o.write {
+	o := operation{key: readIndex % keys, node: leader}
+	if rr {
 		o.node = readIndex % n
 	}
 	return o
@@ -168,7 +172,7 @@ func (l *load) prepare() error {
 	return nil
 }
 
-func (l *load) step(name string, rate int, d time.Duration) []row {
+func (l *load) step(name string, rate int, d time.Duration, first int) []row {
 	out := make([]result, due(rate, d))
 	sem := make(chan struct{}, l.inFlight)
 	var wg sync.WaitGroup
@@ -182,7 +186,7 @@ func (l *load) step(name string, rate int, d time.Duration) []row {
 		end := due(rate, elapsed)
 		for ; cursor < end; cursor++ {
 			i := cursor
-			o := request(i, l.leader, len(l.clients), l.rr)
+			o := request(first+i, l.leader, len(l.clients), len(l.get), l.rr)
 			m := l.metrics[0]
 			if o.write {
 				m = l.metrics[1]
@@ -237,7 +241,7 @@ func (l *load) step(name string, rate int, d time.Duration) []row {
 		rows[j].PerNode = map[string]int{}
 	}
 	for i, r := range out {
-		o := request(i, l.leader, len(l.clients), l.rr)
+		o := request(first+i, l.leader, len(l.clients), len(l.get), l.rr)
 		j := 0
 		if o.write {
 			j = 1
@@ -283,6 +287,7 @@ func run() error {
 	addresses := flag.String("nodes", "", "comma-separated storage gRPC endpoints (disposable cluster only)")
 	gateway := flag.String("gateway", "", "single API Gateway gRPC endpoint (disposable cluster only; excludes -nodes and -case)")
 	mode := flag.String("case", "", "direct storage mode: leader-linearizable, leader-local (default), or rr-local")
+	keys := flag.Int("keys", defaultKeys, fmt.Sprintf("number of keys to prefill and exercise (1..%d)", maxKeys))
 	steps := flag.String("read-rps", "1000,1000,1000", "comma-separated Get RPS steps, multiples of 20; Put RPS is 1/20 of Get")
 	duration := flag.Duration("step", 20*time.Second, "duration per step (whole seconds)")
 	timeout := flag.Duration("timeout", time.Second, "per-RPC timeout")
@@ -290,6 +295,9 @@ func run() error {
 	catchUp := flag.Bool("catch-up", false, "launch overdue slots immediately, still subject to the inflight cap")
 	metricsAddr := flag.String("metrics-listen", "", "optional Prometheus HTTP listen address (e.g. 127.0.0.1:9091)")
 	flag.Parse()
+	if *keys < 1 || *keys > maxKeys {
+		return fmt.Errorf("-keys must be in 1..%d", maxKeys)
+	}
 	if *duration < time.Second || *duration > time.Minute || *duration%time.Second != 0 || *timeout <= 0 || *inflight < 1 {
 		return errors.New("invalid flags; see -help")
 	}
@@ -334,7 +342,7 @@ func run() error {
 	payload := make([]byte, payloadSize)
 	_, _ = rand.New(rand.NewSource(42)).Read(payload)
 	prefix := fmt.Sprintf("storage-load:%d:", time.Now().UnixNano())
-	for i := 0; i < keysN; i++ {
+	for i := 0; i < *keys; i++ {
 		key := prefix + strconv.Itoa(i)
 		l.get = append(l.get, &pb.GetRequest{Key: key})
 		l.put = append(l.put, &pb.PutRequest{Key: key, Data: payload})
@@ -342,8 +350,8 @@ func run() error {
 	if e := l.prepare(); e != nil {
 		return e
 	}
-	log.Printf("case=%s write_endpoint=%s seed_keys=%d", *mode, l.nodes[l.leader], keysN)
-	_ = l.step(*mode, rates[0], time.Second)
+	log.Printf("case=%s write_endpoint=%s seed_keys=%d", *mode, l.nodes[l.leader], len(l.get))
+	_ = l.step(*mode, rates[0], time.Second, 0)
 	if *metricsAddr != "" {
 		metrics, closeMetrics, err := serveMetrics(*metricsAddr)
 		if err != nil {
@@ -353,12 +361,14 @@ func run() error {
 		l.metrics = metrics
 	}
 	enc := json.NewEncoder(os.Stdout)
+	first := 0
 	for _, r := range rates {
-		for _, line := range l.step(*mode, r, *duration) {
+		for _, line := range l.step(*mode, r, *duration, first) {
 			if e := enc.Encode(line); e != nil {
 				return e
 			}
 		}
+		first += due(r, *duration)
 	}
 	return nil
 }
