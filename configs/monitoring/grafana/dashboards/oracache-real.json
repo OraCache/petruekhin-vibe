@@ -7,6 +7,44 @@
     "from": "now-5m",
     "to": "now"
   },
+  "links": [
+    {
+      "type": "link",
+      "title": "← MVP под нагрузкой",
+      "url": "/d/oracache-mvp",
+      "includeVars": false,
+      "keepTime": true,
+      "targetBlank": false
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "node",
+        "label": "Storage-нода",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "oracache-prometheus"
+        },
+        "definition": "label_values(up{job=\"storage-node\"}, instance)",
+        "query": {
+          "query": "label_values(up{job=\"storage-node\"}, instance)",
+          "refId": "StandardVariableQuery"
+        },
+        "refresh": 2,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": false,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": [],
+        "sort": 1
+      }
+    ]
+  },
   "panels": [
     {
       "id": 1,
@@ -26,7 +64,7 @@
       "fieldConfig": {"defaults":{"unit":"none","noValue":"Нет данных","mappings":[{"type":"value","options":{"0":{"text":"Недоступен","color":"red"},"1":{"text":"Доступен","color":"green"}}}]},"overrides":[]},
       "options": {"reduceOptions":{"calcs":["lastNotNull"]},"textMode":"value_and_name","colorMode":"value"},
       "targets": [
-        {"refId":"A","expr":"up{job=~\"cp-api|api-gateway|storage-node\"}","legendFormat":"{{job}} · {{instance}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":true,"range":false}
+        {"refId":"A","expr":"up{job=~\"cp-api|api-gateway|storage-node\",instance=~\"${node:regex}|api-gateway:9466|cp-api:9464\"}","legendFormat":"{{job}} · {{instance}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":true,"range":false}
       ]
     },
     {
@@ -141,7 +179,7 @@
       "fieldConfig": {"defaults":{"unit":"reqps","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
       "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
       "targets": [
-        {"refId":"A","expr":"sum by (job, operation) (rate(oracache_cache_rpc_total{job=~\"api-gateway|storage-node\"}[1m]))","legendFormat":"{{job}} · {{operation}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+        {"refId":"A","expr":"sum by (job, operation) (rate(oracache_cache_rpc_total{job=~\"api-gateway|storage-node\",instance=~\"${node:regex}|api-gateway:9466|cp-api:9464\"}[1m]))","legendFormat":"{{job}} · {{operation}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
       ]
     },
     {
@@ -154,7 +192,7 @@
       "fieldConfig": {"defaults":{"unit":"reqps","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
       "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
       "targets": [
-        {"refId":"A","expr":"sum by (job, operation, outcome, grpc_code) (rate(oracache_cache_rpc_total{job=~\"api-gateway|storage-node\"}[1m])) > 0","legendFormat":"{{job}} · {{operation}} · {{outcome}} · {{grpc_code}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+        {"refId":"A","expr":"sum by (job, operation, outcome, grpc_code) (rate(oracache_cache_rpc_total{job=~\"api-gateway|storage-node\",instance=~\"${node:regex}|api-gateway:9466|cp-api:9464\"}[1m])) > 0","legendFormat":"{{job}} · {{operation}} · {{outcome}} · {{grpc_code}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
       ]
     },
     {
@@ -182,9 +220,9 @@
       "fieldConfig": {"defaults":{"unit":"s","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
       "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
       "targets": [
-        {"refId":"A","expr":"histogram_quantile(0.5, sum by (operation, le) (rate(oracache_cache_rpc_duration_seconds_bucket{job=\"storage-node\"}[1m])))","legendFormat":"{{operation}} · p50","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true},
-        {"refId":"B","expr":"histogram_quantile(0.95, sum by (operation, le) (rate(oracache_cache_rpc_duration_seconds_bucket{job=\"storage-node\"}[1m])))","legendFormat":"{{operation}} · p95","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true},
-        {"refId":"C","expr":"histogram_quantile(0.99, sum by (operation, le) (rate(oracache_cache_rpc_duration_seconds_bucket{job=\"storage-node\"}[1m])))","legendFormat":"{{operation}} · p99","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+        {"refId":"A","expr":"histogram_quantile(0.5, sum by (operation, le) (rate(oracache_cache_rpc_duration_seconds_bucket{job=\"storage-node\",instance=~\"${node:regex}\"}[1m])))","legendFormat":"{{operation}} · p50","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true},
+        {"refId":"B","expr":"histogram_quantile(0.95, sum by (operation, le) (rate(oracache_cache_rpc_duration_seconds_bucket{job=\"storage-node\",instance=~\"${node:regex}\"}[1m])))","legendFormat":"{{operation}} · p95","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true},
+        {"refId":"C","expr":"histogram_quantile(0.99, sum by (operation, le) (rate(oracache_cache_rpc_duration_seconds_bucket{job=\"storage-node\",instance=~\"${node:regex}\"}[1m])))","legendFormat":"{{operation}} · p99","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
       ]
     },
     {
@@ -197,7 +235,7 @@
       "fieldConfig": {"defaults":{"unit":"percentunit","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
       "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
       "targets": [
-        {"refId":"A","expr":"(sum by (job, operation) (rate(oracache_cache_rpc_total{job=~\"api-gateway|storage-node\",grpc_code!=\"OK\"}[1m])) or (0 * sum by (job, operation) (rate(oracache_cache_rpc_total{job=~\"api-gateway|storage-node\"}[1m])))) / (sum by (job, operation) (rate(oracache_cache_rpc_total{job=~\"api-gateway|storage-node\"}[1m])) > 0)","legendFormat":"{{job}} · {{operation}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+        {"refId":"A","expr":"(sum by (job, operation) (rate(oracache_cache_rpc_total{job=~\"api-gateway|storage-node\",instance=~\"${node:regex}|api-gateway:9466|cp-api:9464\",grpc_code!=\"OK\"}[1m])) or (0 * sum by (job, operation) (rate(oracache_cache_rpc_total{job=~\"api-gateway|storage-node\",instance=~\"${node:regex}|api-gateway:9466|cp-api:9464\"}[1m])))) / (sum by (job, operation) (rate(oracache_cache_rpc_total{job=~\"api-gateway|storage-node\",instance=~\"${node:regex}|api-gateway:9466|cp-api:9464\"}[1m])) > 0)","legendFormat":"{{job}} · {{operation}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
       ]
     },
     {
@@ -210,7 +248,7 @@
       "fieldConfig": {"defaults":{"unit":"percentunit","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
       "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
       "targets": [
-        {"refId":"A","expr":"(sum by (job) (rate(oracache_cache_rpc_total{job=~\"api-gateway|storage-node\",operation=\"get\",grpc_code=\"OK\",outcome=\"hit\"}[1m])) or (0 * sum by (job) (rate(oracache_cache_rpc_total{job=~\"api-gateway|storage-node\",operation=\"get\",grpc_code=\"OK\",outcome=~\"hit|miss|version_not_found\"}[1m])))) / (sum by (job) (rate(oracache_cache_rpc_total{job=~\"api-gateway|storage-node\",operation=\"get\",grpc_code=\"OK\",outcome=~\"hit|miss|version_not_found\"}[1m])) > 0)","legendFormat":"{{job}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+        {"refId":"A","expr":"(sum by (job) (rate(oracache_cache_rpc_total{job=~\"api-gateway|storage-node\",instance=~\"${node:regex}|api-gateway:9466|cp-api:9464\",operation=\"get\",grpc_code=\"OK\",outcome=\"hit\"}[1m])) or (0 * sum by (job) (rate(oracache_cache_rpc_total{job=~\"api-gateway|storage-node\",instance=~\"${node:regex}|api-gateway:9466|cp-api:9464\",operation=\"get\",grpc_code=\"OK\",outcome=~\"hit|miss|version_not_found\"}[1m])))) / (sum by (job) (rate(oracache_cache_rpc_total{job=~\"api-gateway|storage-node\",instance=~\"${node:regex}|api-gateway:9466|cp-api:9464\",operation=\"get\",grpc_code=\"OK\",outcome=~\"hit|miss|version_not_found\"}[1m])) > 0)","legendFormat":"{{job}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
       ]
     },
     {
@@ -236,7 +274,7 @@
       "fieldConfig": {"defaults":{"unit":"short","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
       "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
       "targets": [
-        {"refId":"A","expr":"increase(oracache_raft_transport_send_errors_total[1m])","legendFormat":"{{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+        {"refId":"A","expr":"increase(oracache_raft_transport_send_errors_total{instance=~\"${node:regex}\"}[1m])","legendFormat":"{{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
       ]
     },
     {
@@ -257,10 +295,10 @@
       "fieldConfig": {"defaults":{"unit":"short","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
       "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
       "targets": [
-        {"refId":"A","expr":"oracache_raft_is_leader","legendFormat":"лидер · {{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true},
-        {"refId":"B","expr":"oracache_raft_is_follower","legendFormat":"follower · {{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true},
-        {"refId":"C","expr":"oracache_raft_has_leader","legendFormat":"знает лидера · {{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true},
-        {"refId":"D","expr":"oracache_raft_ready","legendFormat":"готова · {{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+        {"refId":"A","expr":"oracache_raft_is_leader{instance=~\"${node:regex}\"}","legendFormat":"лидер · {{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true},
+        {"refId":"B","expr":"oracache_raft_is_follower{instance=~\"${node:regex}\"}","legendFormat":"follower · {{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true},
+        {"refId":"C","expr":"oracache_raft_has_leader{instance=~\"${node:regex}\"}","legendFormat":"знает лидера · {{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true},
+        {"refId":"D","expr":"oracache_raft_ready{instance=~\"${node:regex}\"}","legendFormat":"готова · {{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
       ]
     },
     {
@@ -273,7 +311,7 @@
       "fieldConfig": {"defaults":{"unit":"short","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
       "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
       "targets": [
-        {"refId":"A","expr":"oracache_raft_term","legendFormat":"{{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+        {"refId":"A","expr":"oracache_raft_term{instance=~\"${node:regex}\"}","legendFormat":"{{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
       ]
     },
     {
@@ -286,10 +324,10 @@
       "fieldConfig": {"defaults":{"unit":"short","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
       "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
       "targets": [
-        {"refId":"A","expr":"oracache_raft_commit_index","legendFormat":"commit · {{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true},
-        {"refId":"B","expr":"oracache_raft_applied_index","legendFormat":"applied · {{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true},
-        {"refId":"C","expr":"oracache_raft_snapshot_index","legendFormat":"snapshot · {{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true},
-        {"refId":"D","expr":"oracache_raft_last_index","legendFormat":"last · {{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+        {"refId":"A","expr":"oracache_raft_commit_index{instance=~\"${node:regex}\"}","legendFormat":"commit · {{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true},
+        {"refId":"B","expr":"oracache_raft_applied_index{instance=~\"${node:regex}\"}","legendFormat":"applied · {{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true},
+        {"refId":"C","expr":"oracache_raft_snapshot_index{instance=~\"${node:regex}\"}","legendFormat":"snapshot · {{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true},
+        {"refId":"D","expr":"oracache_raft_last_index{instance=~\"${node:regex}\"}","legendFormat":"last · {{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
       ]
     },
     {
@@ -302,7 +340,7 @@
       "fieldConfig": {"defaults":{"unit":"short","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
       "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
       "targets": [
-        {"refId":"A","expr":"oracache_raft_commit_index - oracache_raft_applied_index","legendFormat":"{{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+        {"refId":"A","expr":"oracache_raft_commit_index{instance=~\"${node:regex}\"} - oracache_raft_applied_index{instance=~\"${node:regex}\"}","legendFormat":"{{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
       ]
     },
     {
@@ -315,7 +353,7 @@
       "fieldConfig": {"defaults":{"unit":"short","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
       "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
       "targets": [
-        {"refId":"A","expr":"oracache_raft_follower_lag_entries","legendFormat":"{{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+        {"refId":"A","expr":"oracache_raft_follower_lag_entries{instance=~\"${node:regex}\"}","legendFormat":"{{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
       ]
     },
     {
@@ -328,7 +366,7 @@
       "fieldConfig": {"defaults":{"unit":"s","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
       "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
       "targets": [
-        {"refId":"A","expr":"histogram_quantile(0.95, sum by (region, partition, node_id, stage, le) (rate(oracache_raft_stage_duration_seconds_bucket[1m])))","legendFormat":"{{stage}} · {{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+        {"refId":"A","expr":"histogram_quantile(0.95, sum by (region, partition, node_id, stage, le) (rate(oracache_raft_stage_duration_seconds_bucket{instance=~\"${node:regex}\"}[1m])))","legendFormat":"{{stage}} · {{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
       ]
     },
     {
@@ -349,7 +387,7 @@
       "fieldConfig": {"defaults":{"unit":"short","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
       "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
       "targets": [
-        {"refId":"A","expr":"rate(process_cpu_seconds_total{job=~\"cp-api|api-gateway|storage-node\"}[1m])","legendFormat":"{{job}} · {{instance}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+        {"refId":"A","expr":"rate(process_cpu_seconds_total{job=~\"cp-api|api-gateway|storage-node\",instance=~\"${node:regex}|api-gateway:9466|cp-api:9464\"}[1m])","legendFormat":"{{job}} · {{instance}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
       ]
     },
     {
@@ -362,7 +400,7 @@
       "fieldConfig": {"defaults":{"unit":"bytes","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
       "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
       "targets": [
-        {"refId":"A","expr":"process_resident_memory_bytes{job=~\"cp-api|api-gateway|storage-node\"}","legendFormat":"{{job}} · {{instance}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+        {"refId":"A","expr":"process_resident_memory_bytes{job=~\"cp-api|api-gateway|storage-node\",instance=~\"${node:regex}|api-gateway:9466|cp-api:9464\"}","legendFormat":"{{job}} · {{instance}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
       ]
     },
     {
@@ -375,7 +413,7 @@
       "fieldConfig": {"defaults":{"unit":"bytes","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
       "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
       "targets": [
-        {"refId":"A","expr":"go_memstats_heap_alloc_bytes{job=~\"cp-api|api-gateway|storage-node\"}","legendFormat":"{{job}} · {{instance}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+        {"refId":"A","expr":"go_memstats_heap_alloc_bytes{job=~\"cp-api|api-gateway|storage-node\",instance=~\"${node:regex}|api-gateway:9466|cp-api:9464\"}","legendFormat":"{{job}} · {{instance}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
       ]
     },
     {
@@ -388,7 +426,7 @@
       "fieldConfig": {"defaults":{"unit":"short","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
       "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
       "targets": [
-        {"refId":"A","expr":"go_goroutines{job=~\"cp-api|api-gateway|storage-node\"}","legendFormat":"{{job}} · {{instance}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+        {"refId":"A","expr":"go_goroutines{job=~\"cp-api|api-gateway|storage-node\",instance=~\"${node:regex}|api-gateway:9466|cp-api:9464\"}","legendFormat":"{{job}} · {{instance}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
       ]
     },
     {
@@ -401,7 +439,7 @@
       "fieldConfig": {"defaults":{"unit":"bytes","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
       "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
       "targets": [
-        {"refId":"A","expr":"oracache_storage_accounted_bytes","legendFormat":"{{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+        {"refId":"A","expr":"oracache_storage_accounted_bytes{instance=~\"${node:regex}\"}","legendFormat":"{{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
       ]
     },
     {
@@ -414,8 +452,58 @@
       "fieldConfig": {"defaults":{"unit":"short","noValue":"Нет данных","custom":{"spanNulls":false}},"overrides":[]},
       "options": {"legend":{"displayMode":"table","placement":"bottom"},"tooltip":{"mode":"multi"}},
       "targets": [
-        {"refId":"A","expr":"oracache_storage_keys","legendFormat":"{{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
+        {"refId":"A","expr":"oracache_storage_keys{instance=~\"${node:regex}\"}","legendFormat":"{{region}} / {{partition}} · {{node_id}}","datasource":{"type":"prometheus","uid":"oracache-prometheus"},"instant":false,"range":true}
       ]
+    },
+    {
+      "id": 33,
+      "type": "heatmap",
+      "title": "Распределение клиентской задержки — GET",
+      "description": "Успешные GET по данным генератора, агрегированные за 10 с. Не фильтруется по ноде: генератор измеряет клиентский путь через Gateway.",
+      "gridPos": {
+        "x": 0,
+        "y": 102,
+        "w": 24,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "oracache-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "Нет данных",
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (le) (rate(storage_load_success_latency_seconds_bucket{operation=\"Get\"}[10s]))",
+          "legendFormat": "{{le}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "oracache-prometheus"
+          },
+          "instant": false,
+          "range": true,
+          "interval": "2s",
+          "format": "heatmap"
+        }
+      ],
+      "options": {
+        "calculate": false,
+        "yAxis": {
+          "unit": "s"
+        },
+        "tooltip": {
+          "show": true
+        },
+        "legend": {
+          "show": true
+        }
+      }
     }
   ]
 }

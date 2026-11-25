@@ -77,7 +77,8 @@ GOWORK=off go test -race -count=1 -v ./cmd/api-gateway \
 ```sh
 export ORACACHE_CP_PORT=28080 ORACACHE_CP_STATUS_PORT=9466
 export ORACACHE_PROMETHEUS_PORT=9090 ORACACHE_GRAFANA_PORT=3000
-docker compose -p oracache-real -f compose.cp.yaml -f compose.cp-observability.yaml up -d --build
+docker compose -p oracache-real -f compose.cp.yaml -f compose.cp-observability.yaml build api-gateway
+docker compose -p oracache-real -f compose.cp.yaml -f compose.cp-observability.yaml up -d --no-build
 curl -fsS "http://127.0.0.1:${ORACACHE_CP_STATUS_PORT}/routes"
 ```
 
@@ -87,8 +88,21 @@ curl -fsS "http://127.0.0.1:${ORACACHE_CP_STATUS_PORT}/routes"
 диагностику на loopback, CP API отдаёт `/metrics` на внутреннем порту 9464,
 а Storage Node на существующем внутреннем Raft-порту 28191.
 
-- [Дашборд реального кластера](http://127.0.0.1:3000/d/oracache-real-cluster)
+- [MVP под нагрузкой](http://127.0.0.1:3000/d/oracache-mvp) — клиентский RPS, ошибки и пропуски, p95/p99, роли нод и итоги выбранного интервала.
+- [Диагностика кластера](http://127.0.0.1:3000/d/oracache-real-cluster) — Gateway, CP, Raft и ресурсы с фильтром по storage-ноде.
 - [Цели сбора Prometheus](http://127.0.0.1:9090/targets)
+
+#### Нагрузка для демо (необязательно)
+
+После готовности маршрута запустите `loadgen` в том же Compose-проекте. Для него нужен статический Linux-бинарник [`storage-load`](https://github.com/OraCache/petruekhin-vibe/tree/storage-load), собранный командой `CGO_ENABLED=0 GOOS=linux make build` под архитектуру Docker-хоста. По умолчанию бинарник ищется в `../storage-load/bin/storage-load`; иначе задайте `STORAGE_LOAD_BINARY` абсолютным путём.
+
+```sh
+docker compose -p oracache-real -f compose.cp.yaml -f compose.cp-observability.yaml run --rm --no-deps --use-aliases -T loadgen > gateway.jsonl
+```
+
+Профиль по умолчанию: 1000 GET/с и 50 PUT/с, 60 секунд. Только для тестового стенда: нагрузчик пишет в кэш. Prometheus собирает его `/metrics` автоматически; после окончания прогона цель `storage-load` закономерно недоступна. Без запуска генератора клиентские панели не заполняются, но роли нод и диагностика доступны.
+
+Для разбора отказа на тестовом стенде остановите текущего лидера вручную. Проверьте сохранность контрольной версии и возможность новой записи через тот же Gateway. Пользователь Grafana с правом добавлять аннотации может отметить остановку, первую успешную запись и результат проверки. Выберите на графиках интервалы «до», «переход», «после» по очереди, чтобы сравнить итоги; переход не смешивайте с равными устойчивыми окнами. Таблица Grafana даёт оценки по scrape, точные итоги прогона — в `gateway.jsonl`.
 
 Скрипт повторяет чистый запуск и три отказных сценария на отдельных проектах
 со свободными портами. Он требует Docker Compose, Go, `curl` и `jq`, выполняет

@@ -1,0 +1,445 @@
+{
+  "uid": "oracache-mvp",
+  "title": "OraCache · MVP под нагрузкой",
+  "schemaVersion": 41,
+  "refresh": "5s",
+  "time": {
+    "from": "now-5m",
+    "to": "now"
+  },
+  "links": [
+    {
+      "type": "link",
+      "title": "Диагностика →",
+      "url": "/d/oracache-real-cluster",
+      "includeVars": false,
+      "keepTime": true,
+      "targetBlank": false
+    }
+  ],
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": false,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "События демо",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Поток нагрузки",
+      "description": "Клиентские метрики storage-load, окно 10 с. Успешные ответы Get/Put — отдельные ряды; с прогревом не смешиваются.",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "oracache-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "Нет данных",
+          "unit": "reqps",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (operation) (rate(storage_load_slots_total{state=~\"scheduled\"}[10s]))",
+          "legendFormat": "{{operation}} · Задано",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "oracache-prometheus"
+          },
+          "instant": false,
+          "range": true,
+          "interval": "2s"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (operation) (rate(storage_load_slots_total{state=~\"sent\"}[10s]))",
+          "legendFormat": "{{operation}} · Отправлено",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "oracache-prometheus"
+          },
+          "instant": false,
+          "range": true,
+          "interval": "2s"
+        },
+        {
+          "refId": "C",
+          "expr": "sum by (operation) (rate(storage_load_rpc_completed_total{outcome=\"ok\"}[10s])) or 0 * sum by (operation) (rate(storage_load_slots_total{state=~\"sent\"}[10s]))",
+          "legendFormat": "{{operation}} · Успешно",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "oracache-prometheus"
+          },
+          "instant": false,
+          "range": true,
+          "interval": "2s"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Ошибки и неотправленные запросы",
+      "description": "Ошибки — завершённые RPC с исходом не ok. Пропуски — до RPC (scheduler_late или inflight_limit). Окно 10 с.",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "oracache-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "Нет данных",
+          "unit": "reqps",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (operation) (rate(storage_load_rpc_completed_total{outcome!=\"ok\"}[10s])) or 0 * sum by (operation) (rate(storage_load_slots_total{state=~\"sent\"}[10s]))",
+          "legendFormat": "{{operation}} · Ошибки RPC",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "oracache-prometheus"
+          },
+          "instant": false,
+          "range": true,
+          "interval": "2s"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (operation) (rate(storage_load_slots_total{state=~\"scheduler_late|inflight_limit\"}[10s]))",
+          "legendFormat": "{{operation}} · Не отправлено",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "oracache-prometheus"
+          },
+          "instant": false,
+          "range": true,
+          "interval": "2s"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Задержка успешных запросов клиента",
+      "description": "От запланированного старта до успешного ответа. Окно 10 с; без успешных ответов перцентиль не определён.",
+      "gridPos": {
+        "x": 0,
+        "y": 7,
+        "w": 12,
+        "h": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "oracache-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "Нет данных",
+          "unit": "s",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (operation, le) (rate(storage_load_success_latency_seconds_bucket[10s])))",
+          "legendFormat": "{{operation}} · p95",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "oracache-prometheus"
+          },
+          "instant": false,
+          "range": true,
+          "interval": "2s"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.99, sum by (operation, le) (rate(storage_load_success_latency_seconds_bucket[10s])))",
+          "legendFormat": "{{operation}} · p99",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "oracache-prometheus"
+          },
+          "instant": false,
+          "range": true,
+          "interval": "2s"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "state-timeline",
+      "title": "Роли и доступность нод",
+      "description": "Лидер определяется по наблюдаемому максимальному term; экспорт метрик не доказывает кворум или доступность маршрута. Пропуски не заполняются.",
+      "gridPos": {
+        "x": 12,
+        "y": 7,
+        "w": 12,
+        "h": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "oracache-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "Нет данных",
+          "unit": "none",
+          "custom": {
+            "spanNulls": false
+          },
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "gray"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "-1": {
+                  "text": "Нет scrape",
+                  "color": "red",
+                  "index": 0
+                },
+                "0": {
+                  "text": "Нет готовой роли",
+                  "color": "orange",
+                  "index": 1
+                },
+                "1": {
+                  "text": "Готовая реплика",
+                  "color": "blue",
+                  "index": 2
+                },
+                "2": {
+                  "text": "Лидер",
+                  "color": "green",
+                  "index": 3
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(2 * max by (instance) (oracache_raft_leader_at_max_term == 1) and on (instance) (up{job=\"storage-node\"} == 1))\nor on (instance) (max by (instance) ((oracache_raft_is_follower == 1) and (oracache_raft_ready == 1)) and on (instance) (up{job=\"storage-node\"} == 1))\nor on (instance) (0 * max by (instance) (up{job=\"storage-node\"} == 1))\nor on (instance) (-1 + 0 * max by (instance) (up{job=\"storage-node\"} == 0))",
+          "legendFormat": "{{instance}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "oracache-prometheus"
+          },
+          "instant": false,
+          "range": true,
+          "interval": "2s"
+        }
+      ],
+      "options": {
+        "mergeValues": true,
+        "showValue": "auto",
+        "alignValue": "left",
+        "rowHeight": 0.8,
+        "legend": {
+          "showLegend": false
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "Итоги выбранного интервала",
+      "description": "Выдели диапазон «до», «переход» или «после» на графике. Для сравнения устойчивых фаз используй равные интервалы. Prometheus экстраполирует счётчики; точные итоги полного запуска — в JSONL.",
+      "gridPos": {
+        "x": 0,
+        "y": 14,
+        "w": 16,
+        "h": 5
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "oracache-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "Нет данных",
+          "decimals": 2,
+          "custom": {"width": 105}
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (operation) (rate(storage_load_rpc_completed_total{outcome=\"ok\"}[$__range])) or 0 * sum by (operation) (rate(storage_load_slots_total{state=~\"sent\"}[$__range]))",
+          "legendFormat": "",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "oracache-prometheus"
+          },
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (operation) (increase(storage_load_rpc_completed_total{outcome!=\"ok\"}[$__range])) or 0 * sum by (operation) (increase(storage_load_slots_total{state=~\"sent\"}[$__range]))",
+          "legendFormat": "",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "oracache-prometheus"
+          },
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "refId": "C",
+          "expr": "sum by (operation) (increase(storage_load_slots_total{state=~\"scheduler_late|inflight_limit\"}[$__range]))",
+          "legendFormat": "",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "oracache-prometheus"
+          },
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "refId": "D",
+          "expr": "1000 * histogram_quantile(0.95, sum by (operation, le) (increase(storage_load_success_latency_seconds_bucket[$__range])))",
+          "legendFormat": "",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "oracache-prometheus"
+          },
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "refId": "E",
+          "expr": "1000 * histogram_quantile(0.99, sum by (operation, le) (increase(storage_load_success_latency_seconds_bucket[$__range])))",
+          "legendFormat": "",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "oracache-prometheus"
+          },
+          "instant": true,
+          "range": false,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "operation",
+            "mode": "outerTabular"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time 1": true,
+              "Time 2": true,
+              "Time 3": true,
+              "Time 4": true,
+              "Time 5": true,
+              "Time": true
+            },
+            "renameByName": {
+              "operation": "Операция",
+              "Value #A": "OK, RPS",
+              "Value #B": "Ошибки RPC",
+              "Value #C": "Пропуски",
+              "Value #D": "p95, мс",
+              "Value #E": "p99, мс"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "text",
+      "title": "Контроль данных и отметки демо",
+      "description": "Отмечаются оператором, а не вычисляются из успешных RPC.",
+      "gridPos": {
+        "x": 16,
+        "y": 14,
+        "w": 8,
+        "h": 5
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "- До отказа: запиши контрольный ключ и версию.\n- После: прочитай **ту же версию** и запиши новое значение через тот же Gateway.\n- Отметь остановку и первую успешную запись аннотациями."
+      }
+    }
+  ]
+}

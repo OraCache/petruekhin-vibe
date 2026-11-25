@@ -145,12 +145,15 @@ done
 
 dashboard=$(curl -fsS "http://$grafana/api/dashboards/uid/oracache-real-cluster")
 jq -ec 'select(.meta.provisioned) | {dashboard:.dashboard.uid, panels:(.dashboard.panels | length)}' <<<"$dashboard"
+mvp_dashboard=$(curl -fsS "http://$grafana/api/dashboards/uid/oracache-mvp")
+jq -e '.meta.provisioned' <<<"$mvp_dashboard" >/dev/null
 curl -fsS "http://$grafana/api/dashboards/uid/oracache-cp-monitoring" | jq -e '.meta.provisioned' >/dev/null
-curl -fsS "http://$grafana/api/datasources/proxy/uid/oracache-prometheus/api/v1/query?query=up" |
+curl -fsSG "http://$grafana/api/datasources/proxy/uid/oracache-prometheus/api/v1/query" \
+  --data-urlencode 'query=up{job=~"cp-api|api-gateway|storage-node"}' |
   jq -e '.status == "success" and (.data.result | length == 5)' >/dev/null
 while IFS= read -r expression; do
   query "$expression" >/dev/null
-done < <(jq -r '.dashboard.panels[].targets[]?.expr' <<<"$dashboard")
+done < <(jq -r '.dashboard.panels[].targets[]?.expr | gsub("\n"; " ") | gsub("\\$\\{node:regex\\}"; ".*") | gsub("\\$__range"; "5m")' <<<"$dashboard"$'\n'"$mvp_dashboard")
 
 # As in TestControlPlaneGatewayFailover, stop the serving node after confirmation
 # and check the same Gateway with the acknowledged version and a conditional write.
