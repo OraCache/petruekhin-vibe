@@ -14,16 +14,3 @@ services:
       service: grafana
     environment:
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/oracache-mvp.json
-
-  loadgen:
-    profiles: [demo]
-    image: ${ORACACHE_CP_IMAGE:-oracache-cp:local}
-    entrypoint: [/storage-load]
-    command: ["-gateway=api-gateway:28080", "-metrics-listen=0.0.0.0:9091", "-read-rps=1000", "-step=60s"]
-    volumes:
-      - type: bind
-        source: ${STORAGE_LOAD_BINARY:-../storage-load/bin/storage-load}
-        target: /storage-load
-        read_only: true
-        bind:
-          create_host_path: false

@@ -149,9 +149,13 @@ mvp_dashboard=$(curl -fsS "http://$grafana/api/dashboards/uid/oracache-mvp")
 jq -e '.meta.provisioned' <<<"$mvp_dashboard" >/dev/null
 curl -fsS "http://$grafana/api/dashboards/uid/oracache-cp-monitoring" | jq -e '.meta.provisioned' >/dev/null
 curl -fsSG "http://$grafana/api/datasources/proxy/uid/oracache-prometheus/api/v1/query" \
-  --data-urlencode 'query=up{job=~"cp-api|api-gateway|storage-node"}' |
-  jq -e '.status == "success" and (.data.result | length == 5)' >/dev/null
+  --data-urlencode 'query=up' |
+  jq -e '.status == "success" and ([.data.result[].metric.job] | sort) == ["api-gateway", "cp-api", "storage-node", "storage-node", "storage-node"]' >/dev/null
 while IFS= read -r expression; do
+  if [[ $expression == *storage_load_* ]]; then
+    printf 'Dashboard depends on load generator: %s\n' "$expression" >&2
+    exit 1
+  fi
   query "$expression" >/dev/null
 done < <(jq -r '.dashboard.panels[].targets[]?.expr | gsub("\n"; " ") | gsub("\\$\\{node:regex\\}"; ".*") | gsub("\\$__range"; "5m")' <<<"$dashboard"$'\n'"$mvp_dashboard")
 

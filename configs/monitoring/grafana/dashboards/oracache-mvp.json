@@ -1,6 +1,6 @@
 {
   "uid": "oracache-mvp",
-  "title": "OraCache · MVP под нагрузкой",
+  "title": "OraCache · Обзор кластера",
   "schemaVersion": 41,
   "refresh": "5s",
   "time": {
@@ -37,12 +37,12 @@
     {
       "id": 1,
       "type": "timeseries",
-      "title": "Поток нагрузки",
-      "description": "Клиентские метрики storage-load, окно 10 с. Успешные ответы Get/Put — отдельные ряды; с прогревом не смешиваются.",
+      "title": "Завершённые RPC на Gateway",
+      "description": "Запросы, завершённые обработчиком Gateway (GET, PUT, DELETE), окно 10 с. gRPC OK — транспортный статус: MISS и конфликт версии не равны успешному попаданию или записи.",
       "gridPos": {
         "x": 0,
         "y": 0,
-        "w": 12,
+        "w": 8,
         "h": 7
       },
       "datasource": {
@@ -62,8 +62,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (operation) (rate(storage_load_slots_total{state=~\"scheduled\"}[10s]))",
-          "legendFormat": "{{operation}} · Задано",
+          "expr": "sum by (operation) (rate(oracache_cache_rpc_total{job=\"api-gateway\"}[10s]))",
+          "legendFormat": "{{operation}} · Все",
           "datasource": {
             "type": "prometheus",
             "uid": "oracache-prometheus"
@@ -74,20 +74,8 @@
         },
         {
           "refId": "B",
-          "expr": "sum by (operation) (rate(storage_load_slots_total{state=~\"sent\"}[10s]))",
-          "legendFormat": "{{operation}} · Отправлено",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "oracache-prometheus"
-          },
-          "instant": false,
-          "range": true,
-          "interval": "2s"
-        },
-        {
-          "refId": "C",
-          "expr": "sum by (operation) (rate(storage_load_rpc_completed_total{outcome=\"ok\"}[10s])) or 0 * sum by (operation) (rate(storage_load_slots_total{state=~\"sent\"}[10s]))",
-          "legendFormat": "{{operation}} · Успешно",
+          "expr": "sum by (operation) (rate(oracache_cache_rpc_total{job=\"api-gateway\",grpc_code=\"OK\"}[10s]))",
+          "legendFormat": "{{operation}} · gRPC OK",
           "datasource": {
             "type": "prometheus",
             "uid": "oracache-prometheus"
@@ -110,12 +98,12 @@
     {
       "id": 2,
       "type": "timeseries",
-      "title": "Ошибки и неотправленные запросы",
-      "description": "Ошибки — завершённые RPC с исходом не ok. Пропуски — до RPC (scheduler_late или inflight_limit). Окно 10 с.",
+      "title": "Ошибки gRPC на Gateway",
+      "description": "Завершённые RPC с кодом не OK, окно 10 с. Не включает доменные исходы с кодом OK и запросы, не дошедшие до Gateway.",
       "gridPos": {
-        "x": 12,
+        "x": 8,
         "y": 0,
-        "w": 12,
+        "w": 8,
         "h": 7
       },
       "datasource": {
@@ -135,20 +123,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (operation) (rate(storage_load_rpc_completed_total{outcome!=\"ok\"}[10s])) or 0 * sum by (operation) (rate(storage_load_slots_total{state=~\"sent\"}[10s]))",
-          "legendFormat": "{{operation}} · Ошибки RPC",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "oracache-prometheus"
-          },
-          "instant": false,
-          "range": true,
-          "interval": "2s"
-        },
-        {
-          "refId": "B",
-          "expr": "sum by (operation) (rate(storage_load_slots_total{state=~\"scheduler_late|inflight_limit\"}[10s]))",
-          "legendFormat": "{{operation}} · Не отправлено",
+          "expr": "sum by (operation) (rate(oracache_cache_rpc_total{job=\"api-gateway\",grpc_code!=\"OK\"}[10s]))",
+          "legendFormat": "{{operation}}",
           "datasource": {
             "type": "prometheus",
             "uid": "oracache-prometheus"
@@ -169,10 +145,61 @@
       }
     },
     {
+      "id": 7,
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 8,
+        "h": 7
+      },
+      "type": "timeseries",
+      "title": "Доля попаданий GET на Gateway",
+      "description": "HIT / (HIT + MISS + VERSION_NOT_FOUND), только gRPC OK, окно 10 с. Если подходящих GET не было, данных нет.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "oracache-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "noValue": "Нет данных",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (operation) (rate(oracache_cache_rpc_total{job=\"api-gateway\",operation=\"get\",grpc_code=\"OK\",outcome=\"hit\"}[10s])) / (sum by (operation) (rate(oracache_cache_rpc_total{job=\"api-gateway\",operation=\"get\",grpc_code=\"OK\",outcome=~\"hit|miss|version_not_found\"}[10s])) > 0)",
+          "legendFormat": "GET hit rate",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "oracache-prometheus"
+          },
+          "instant": false,
+          "range": true,
+          "interval": "2s"
+        }
+      ]
+    },
+    {
       "id": 3,
       "type": "timeseries",
-      "title": "Задержка успешных запросов клиента",
-      "description": "От запланированного старта до успешного ответа. Окно 10 с; без успешных ответов перцентиль не определён.",
+      "title": "Задержка обработчика Gateway",
+      "description": "p95/p99 по всем завершённым RPC, включая ошибки, окно 10 с. Это время на сервере, не задержка клиента.",
       "gridPos": {
         "x": 0,
         "y": 7,
@@ -196,7 +223,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (operation, le) (rate(storage_load_success_latency_seconds_bucket[10s])))",
+          "expr": "histogram_quantile(0.95, sum by (operation, le) (rate(oracache_cache_rpc_duration_seconds_bucket{job=\"api-gateway\"}[10s]))) >= 0",
           "legendFormat": "{{operation}} · p95",
           "datasource": {
             "type": "prometheus",
@@ -208,7 +235,7 @@
         },
         {
           "refId": "B",
-          "expr": "histogram_quantile(0.99, sum by (operation, le) (rate(storage_load_success_latency_seconds_bucket[10s])))",
+          "expr": "histogram_quantile(0.99, sum by (operation, le) (rate(oracache_cache_rpc_duration_seconds_bucket{job=\"api-gateway\"}[10s]))) >= 0",
           "legendFormat": "{{operation}} · p99",
           "datasource": {
             "type": "prometheus",
@@ -313,7 +340,7 @@
       "id": 5,
       "type": "table",
       "title": "Итоги выбранного интервала",
-      "description": "Выдели диапазон «до», «переход» или «после» на графике. Для сравнения устойчивых фаз используй равные интервалы. Prometheus экстраполирует счётчики; точные итоги полного запуска — в JSONL.",
+      "description": "Выбери интересующий интервал. Счётчики Prometheus экстраполируются по scrape. p95/p99 — время обработчика Gateway, включая ошибки, не задержка клиента.",
       "gridPos": {
         "x": 0,
         "y": 14,
@@ -328,14 +355,16 @@
         "defaults": {
           "noValue": "Нет данных",
           "decimals": 2,
-          "custom": {"width": 105}
+          "custom": {
+            "width": 105
+          }
         },
         "overrides": []
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (operation) (rate(storage_load_rpc_completed_total{outcome=\"ok\"}[$__range])) or 0 * sum by (operation) (rate(storage_load_slots_total{state=~\"sent\"}[$__range]))",
+          "expr": "sum by (operation) (rate(oracache_cache_rpc_total{job=\"api-gateway\"}[$__range]))",
           "legendFormat": "",
           "datasource": {
             "type": "prometheus",
@@ -347,7 +376,7 @@
         },
         {
           "refId": "B",
-          "expr": "sum by (operation) (increase(storage_load_rpc_completed_total{outcome!=\"ok\"}[$__range])) or 0 * sum by (operation) (increase(storage_load_slots_total{state=~\"sent\"}[$__range]))",
+          "expr": "sum by (operation) (rate(oracache_cache_rpc_total{job=\"api-gateway\",grpc_code=\"OK\"}[$__range]))",
           "legendFormat": "",
           "datasource": {
             "type": "prometheus",
@@ -359,7 +388,7 @@
         },
         {
           "refId": "C",
-          "expr": "sum by (operation) (increase(storage_load_slots_total{state=~\"scheduler_late|inflight_limit\"}[$__range]))",
+          "expr": "sum by (operation) (increase(oracache_cache_rpc_total{job=\"api-gateway\",grpc_code!=\"OK\"}[$__range]))",
           "legendFormat": "",
           "datasource": {
             "type": "prometheus",
@@ -371,7 +400,7 @@
         },
         {
           "refId": "D",
-          "expr": "1000 * histogram_quantile(0.95, sum by (operation, le) (increase(storage_load_success_latency_seconds_bucket[$__range])))",
+          "expr": "1000 * histogram_quantile(0.95, sum by (operation, le) (increase(oracache_cache_rpc_duration_seconds_bucket{job=\"api-gateway\"}[$__range]))) >= 0",
           "legendFormat": "",
           "datasource": {
             "type": "prometheus",
@@ -383,7 +412,7 @@
         },
         {
           "refId": "E",
-          "expr": "1000 * histogram_quantile(0.99, sum by (operation, le) (increase(storage_load_success_latency_seconds_bucket[$__range])))",
+          "expr": "1000 * histogram_quantile(0.99, sum by (operation, le) (increase(oracache_cache_rpc_duration_seconds_bucket{job=\"api-gateway\"}[$__range]))) >= 0",
           "legendFormat": "",
           "datasource": {
             "type": "prometheus",
@@ -415,9 +444,9 @@
             },
             "renameByName": {
               "operation": "Операция",
-              "Value #A": "OK, RPS",
-              "Value #B": "Ошибки RPC",
-              "Value #C": "Пропуски",
+              "Value #A": "Всего, RPS",
+              "Value #B": "OK, RPS",
+              "Value #C": "Ошибки RPC",
               "Value #D": "p95, мс",
               "Value #E": "p99, мс"
             }
