@@ -44,8 +44,6 @@ services:
       retries: 30
   grafana:
     extends: {file: compose.cp-observability.yaml, service: grafana}
-    ports: !override
-      - "127.0.0.1:${ORACACHE_GRAFANA_PORT:-33000}:3000"
     depends_on:
       prometheus:
         condition: service_healthy
