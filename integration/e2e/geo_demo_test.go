@@ -232,6 +232,34 @@ func TestStagedGeoDemo(t *testing.T) {
 		}
 		return fmt.Errorf("MVP role timeline must show node_id")
 	})
+	checkRoles := func(want map[string]string) {
+		t.Helper()
+		waitGeo(t, ctx, fmt.Sprintf("MVP timeline roles %v", want), func(ctx context.Context) error {
+			var out struct {
+				Data struct {
+					Result []struct {
+						Metric map[string]string
+						Value  []json.RawMessage
+					}
+				}
+			}
+			if err := getJSON(ctx, prom+"query?query="+url.QueryEscape(rolesQuery), &out); err != nil {
+				return err
+			}
+			roles := make(map[string]string)
+			for _, series := range out.Data.Result {
+				if len(series.Value) == 2 {
+					roles[series.Metric["node_id"]] = string(series.Value[1])
+				}
+			}
+			for node, role := range want {
+				if roles[node] != role {
+					return fmt.Errorf("want %v, got %v", want, roles)
+				}
+			}
+			return nil
+		})
+	}
 	t.Logf("A accepted revision %d while B and a-4 were absent", seed.GetRev())
 
 	makeDemo("demo-init", "NODES=b-1 b-2 b-3")
@@ -291,6 +319,7 @@ func TestStagedGeoDemo(t *testing.T) {
 		}
 		return fmt.Errorf("a-4 status=%+v membership=%v error=%v", st, m, err)
 	})
+	checkRoles(map[string]string{"a-4": `"4"`})
 	change := func(req *membership.ChangeMembershipRequest) *membership.ChangeMembershipResponse {
 		t.Helper()
 		req.GroupId, req.Region = group, region
@@ -333,6 +362,7 @@ func TestStagedGeoDemo(t *testing.T) {
 		}
 		return fmt.Errorf("a-4 status=%+v membership=%v error=%v", st, m, err)
 	})
+	checkRoles(map[string]string{"a-4": `"3"`})
 	change(&membership.ChangeMembershipRequest{OperationId: "replace-with-a4", Action: "replace", PeerId: 4, RemoveId: old.GetId()})
 	waitGeo(t, ctx, "finalized A membership", func(ctx context.Context) error {
 		m, err := getMembership(ctx)
@@ -362,29 +392,9 @@ func TestStagedGeoDemo(t *testing.T) {
 	}
 	verifyB("after-replace", updated.GetRev())
 	t.Logf("replaced %s with a-4; gateway write advanced revision %d → %d", old.GetNodeId(), seed.GetRev(), updated.GetRev())
-	waitGeo(t, ctx, "timeline identifies the leader and the stopped node by node_id", func(ctx context.Context) error {
-		var out struct {
-			Data struct {
-				Result []struct {
-					Metric map[string]string
-					Value  []json.RawMessage
-				}
-			}
-		}
-		if err := getJSON(ctx, prom+"query?query="+url.QueryEscape(rolesQuery), &out); err != nil {
-			return err
-		}
-		roles := make(map[string]string)
-		for _, series := range out.Data.Result {
-			if len(series.Value) == 2 {
-				roles[series.Metric["node_id"]] = string(series.Value[1])
-			}
-		}
-		if roles[serving] != `"2"` || roles[old.GetNodeId()] != `"-1"` {
-			return fmt.Errorf("expected leader %s and stopped node %s in the timeline, got %v", serving, old.GetNodeId(), roles)
-		}
-		return nil
-	})
+	wantRoles := map[string]string{"a-4": `"1"`, old.GetNodeId(): `"-1"`}
+	wantRoles[serving] = `"2"`
+	checkRoles(wantRoles)
 	run("kill", "-s", "SIGKILL", serving)
 	successor := waitCPRoute(t, ctx, routes, serving).Write[0].NodeID
 	waitGeo(t, ctx, "successor reads the last acknowledged value", func(ctx context.Context) error {

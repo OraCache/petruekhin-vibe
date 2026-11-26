@@ -260,7 +260,7 @@
       "id": 4,
       "type": "state-timeline",
       "title": "Роли и доступность нод",
-      "description": "Лидер определяется по наблюдаемому максимальному term. Роль follower не зависит от готовности или отставания применения. «Роль не определена» возможна при выборах или отсутствии метрик роли. Роль не доказывает кворум или доступность маршрута. Пропуски не заполняются.",
+      "description": "Лидер определяется по наблюдаемому максимальному term. Learner показывается после применения изменения состава, независимо от готовности и отставания. Запущенная нода вне состава Raft не считается ведомой. «Роль не определена» возможна при выборах или отсутствии метрик роли. Роль не доказывает кворум или доступность маршрута.",
       "gridPos": {
         "x": 12,
         "y": 7,
@@ -305,6 +305,16 @@
                   "text": "Лидер",
                   "color": "green",
                   "index": 3
+                },
+                "3": {
+                  "text": "Learner",
+                  "color": "purple",
+                  "index": 4
+                },
+                "4": {
+                  "text": "Не в Raft",
+                  "color": "gray",
+                  "index": 5
                 }
               }
             }
@@ -315,7 +325,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "label_replace(\n  (2 * max by (instance) (oracache_raft_leader_at_max_term == 1) and on (instance) (up{job=\"storage-node\"} == 1))\n  or on (instance) (max by (instance) (oracache_raft_is_follower == 1) and on (instance) (up{job=\"storage-node\"} == 1))\n  or on (instance) (0 * max by (instance) (up{job=\"storage-node\"} == 1))\n  or on (instance) (-1 + 0 * max by (instance) (up{job=\"storage-node\"} == 0)),\n  \"node_id\", \"$1\", \"instance\", \"(.+):[0-9]+\"\n)",
+          "expr": "label_replace(\n  ((3 * max by (instance) (oracache_raft_is_learner == 1))\n   or on (instance) (4 + max by (instance) (oracache_raft_is_voter == 0))\n   or on (instance) (2 * max by (instance) (oracache_raft_leader_at_max_term == 1))\n   or on (instance) (max by (instance) (oracache_raft_is_follower == 1)))\n  and on (instance) (up{job=\"storage-node\"} == 1)\n  or on (instance) (0 * max by (instance) (up{job=\"storage-node\"} == 1))\n  or on (instance) (-1 + 0 * max by (instance) (up{job=\"storage-node\"} == 0)),\n  \"node_id\", \"$1\", \"instance\", \"(.+):[0-9]+\"\n)",
           "legendFormat": "{{node_id}}",
           "datasource": {
             "type": "prometheus",

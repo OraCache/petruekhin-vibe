@@ -37,7 +37,7 @@ go run ./cmd/oracache membership add-learner --group-id=region-a/shard-0/replica
 go run ./cmd/oracache membership get --group-id=region-a/shard-0/replication-1 --region=region-a
 ```
 
-Когда `a-4` догонит лидера (по `AppliedIndex` в Grafana), выбери старую ноду, которая не лидер. Например, если это `a-3`:
+В Grafana `a-4` сменит «Не в Raft» на «Learner». Это ещё не означает, что она догнала лидера: проверь `AppliedIndex`. Когда нода догонит лидера, выбери старую ноду, которая не лидер. Например, если это `a-3`:
 
 ```sh
 go run ./cmd/oracache membership replace --group-id=region-a/shard-0/replication-1 --region=region-a --operation-id=replace-a3-with-a4 --old-peer-id=3 --learner-id=4
