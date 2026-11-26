@@ -98,3 +98,28 @@ up:
 
 down:
 	docker compose down
+
+.PHONY: demo-build demo-up demo-up-a demo-up-b demo-up-learner demo-stop-node demo-down
+DEMO := docker compose -f compose.replication.yaml
+
+demo-build:
+	$(DEMO) build cp-api
+
+demo-up: demo-build
+	$(DEMO) up -d --no-build --no-recreate
+
+demo-up-a: demo-build
+	$(DEMO) up -d --no-build --no-recreate api-gateway a-1 a-2 a-3 prometheus grafana
+
+demo-up-b:
+	$(DEMO) up -d --no-build --no-recreate b-1 b-2 b-3 api-gateway-b
+
+demo-up-learner:
+	$(DEMO) --profile learner up -d --no-build --no-recreate a-4
+
+demo-stop-node:
+	$(if $(and $(filter 1,$(words $(ID))),$(filter a-1 a-2 a-3 a-4 b-1 b-2 b-3,$(ID))),,$(error ID must be a storage node ID))
+	$(DEMO) --profile learner stop $(ID)
+
+demo-down:
+	$(DEMO) --profile learner down -v
