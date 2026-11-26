@@ -23,6 +23,7 @@ import (
 
 	controlplanev1 "github.com/OraCache/oracache/gen/controlplane/v1"
 	pb "github.com/OraCache/oracache/gen/gateway/v1"
+	membershipv1 "github.com/OraCache/oracache/gen/membership/v1"
 	"github.com/OraCache/oracache/internal/cpagent"
 	"github.com/OraCache/oracache/internal/cpconfig"
 	"github.com/OraCache/oracache/internal/cpmetrics"
@@ -199,6 +200,7 @@ func New(cfg Config) (*Node, error) {
 	}
 	n.grpcSrv = grpc.NewServer(grpc.MaxRecvMsgSize(16<<20), grpc.ChainUnaryInterceptor(interceptors...))
 	pb.RegisterCacheGatewayServer(n.grpcSrv, shardraft.GatewayServer(n.inst))
+	membershipv1.RegisterMembershipAdminServer(n.grpcSrv, &membershipServer{n: n})
 	return n, nil
 }
 
@@ -234,8 +236,21 @@ func (n *Node) requireMasterForWrites(ctx context.Context, req any, info *grpc.U
 		}
 		node, assigned := config.NodeByID(n.cfg.NodeID)
 		assignment, placed := config.Assignment(n.cfg.Region, n.cfg.ShardID)
-		if !assigned || node.Region != n.cfg.Region || node.State == cpconfig.NodeStateDraining ||
-			!placed || !slices.Contains(assignment.ReplicaNodeIDs, n.cfg.NodeID) {
+		if assigned && (node.Region != n.cfg.Region || node.State == cpconfig.NodeStateDraining) {
+			return nil, status.Error(codes.FailedPrecondition, "storage node has no active placement for this partition")
+		}
+		member := false
+		if n.inst != nil {
+			for _, peer := range n.inst.Membership().Members {
+				if peer.ID == n.cfg.PeerID && peer.NodeID == n.cfg.NodeID && peer.Voter {
+					member = true
+					break
+				}
+			}
+		} else {
+			member = assigned && placed && slices.Contains(assignment.ReplicaNodeIDs, n.cfg.NodeID)
+		}
+		if !member {
 			return nil, status.Error(codes.FailedPrecondition, "storage node has no active placement for this partition")
 		}
 	}
@@ -263,6 +278,16 @@ func (n *Node) PartitionStatuses(context.Context) ([]*controlplanev1.PartitionSt
 	}
 	if s.IsLearner {
 		ps.Role = controlplanev1.RaftRole_RAFT_ROLE_LEARNER
+	}
+	if s.Role == "StateLeader" {
+		m := n.inst.Membership()
+		if m.Index > 0 && len(m.Members) > 0 {
+			wire := &controlplanev1.GroupMembership{GroupId: m.GroupID, Region: n.cfg.Region, PartitionId: s.ShardID, ReporterPeerId: n.cfg.PeerID, ConfigIndex: m.Index, Joint: m.Joint, RemovedIds: append([]uint64(nil), m.RemovedIDs...)}
+			for _, peer := range m.Members {
+				wire.Members = append(wire.Members, &controlplanev1.GroupMember{PeerId: peer.ID, NodeId: peer.NodeID, Address: peer.Address, RaftAddress: peer.RaftAddress, Voter: peer.Voter, Learner: peer.Learner, OutgoingVoter: peer.OutgoingVoter})
+			}
+			ps.Membership = wire
+		}
 	}
 	return []*controlplanev1.PartitionStatus{ps}, nil
 }
@@ -294,6 +319,18 @@ func (n *Node) Run(ctx context.Context) error {
 	go func() { serveErr <- n.grpcSrv.Serve(n.grpcLis) }()
 	go func() { serveErr <- n.httpSrv.Serve(n.raftLis) }()
 	if n.agent != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-n.inst.MembershipEvents():
+					n.agent.TriggerHeartbeat()
+				}
+			}
+		}()
 		wg.Add(1)
 		go func() { defer wg.Done(); _ = n.agent.Run(ctx) }()
 	}
