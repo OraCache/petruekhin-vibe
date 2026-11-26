@@ -19,22 +19,16 @@ import (
 //
 // TODO(phase-3): заменить на etcd-backed Store, сохранив стабильную границу API.
 type MemoryStore struct {
-<<<<<<< HEAD
-	mu         sync.RWMutex
-	heartbeats map[string]Heartbeat
-	receipts   map[heartbeatSource]heartbeatReceiptTime // keys are the configured node-region pairs
-	snapshot   Snapshot
-=======
 	mu          sync.RWMutex
 	heartbeats  map[string]Heartbeat
 	memberships map[groupKey]cpconfig.GroupMembership
+	receipts    map[heartbeatSource]heartbeatReceiptTime
 	snapshot    Snapshot
 }
 
 type groupKey struct {
 	region    string
 	partition uint32
->>>>>>> 5b723f3 (CACHE-104 changes after the original #101)
 }
 
 type heartbeatSource struct {
@@ -204,7 +198,11 @@ func (s *MemoryStore) ApplyConfig(ctx context.Context, config *cpconfig.Config) 
 			return fmt.Errorf("%w: have %d, got %d", cpconfig.ErrPartitionCountChanged, s.snapshot.Config.PartitionCount, config.PartitionCount)
 		}
 	}
-<<<<<<< HEAD
+	for key, m := range s.memberships {
+		if assignment, ok := config.Assignment(key.region, key.partition); !ok || (assignment.GroupID != "" && assignment.GroupID != m.GroupID) {
+			delete(s.memberships, key)
+		}
+	}
 	// Keep receipt times only for pairs present in both configurations.
 	receipts := make(map[heartbeatSource]heartbeatReceiptTime, len(config.Nodes))
 	for _, node := range config.Nodes {
@@ -212,13 +210,6 @@ func (s *MemoryStore) ApplyConfig(ctx context.Context, config *cpconfig.Config) 
 		receipts[source] = s.receipts[source]
 	}
 	s.receipts = receipts
-=======
-	for key, m := range s.memberships {
-		if assignment, ok := config.Assignment(key.region, key.partition); !ok || (assignment.GroupID != "" && assignment.GroupID != m.GroupID) {
-			delete(s.memberships, key)
-		}
-	}
->>>>>>> 5b723f3 (CACHE-104 changes after the original #101)
 	s.snapshot = Snapshot{Revision: config.Revision, Config: config.Clone()}
 	return nil
 }

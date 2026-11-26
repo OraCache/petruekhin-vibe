@@ -51,27 +51,6 @@ type delivery struct {
 // Instance owns one peer and one cache. All Raft and cache calls are serialized
 // by Run. An Instance is single-use: restarting without term/vote is unsafe.
 type Instance struct {
-<<<<<<< HEAD
-	cfg        Config
-	cache      StateMachine
-	transport  Transport
-	raw        *raft.RawNode
-	storage    *raft.MemoryStorage
-	peers      map[uint64]Peer
-	requests   chan request
-	incoming   chan raftpb.Message
-	deliveries chan delivery
-	outbound   map[uint64]chan outgoing
-	stop       chan struct{}
-	done       chan struct{}
-	mu         sync.Mutex
-	lifecycle  int // 0 constructed, 1 running, 2 stopped
-	stopOnce   sync.Once
-	observed   atomic.Pointer[Status]
-	heartbeat  atomic.Pointer[Status]
-	membership atomic.Value
-	known      atomic.Value // immutable map used by concurrent Step calls
-=======
 	cfg              Config
 	cache            StateMachine
 	transport        Transport
@@ -87,11 +66,11 @@ type Instance struct {
 	mu               sync.Mutex
 	lifecycle        int // 0 constructed, 1 running, 2 stopped
 	stopOnce         sync.Once
-	observed         atomic.Value
+	observed         atomic.Pointer[Status]
+	heartbeat        atomic.Pointer[Status]
 	membership       atomic.Value
 	membershipEvents chan struct{}
 	known            atomic.Value // immutable map used by concurrent Step calls
->>>>>>> 5b723f3 (CACHE-104 changes after the original #101)
 	// Fields below belong exclusively to Run.
 	pending       map[requestID]*pendingRequest
 	sequence      uint64
@@ -198,7 +177,7 @@ func (n *Instance) publish(running bool, lastError string) {
 	previous, exists := n.membership.Load().(Membership)
 	if !exists || previous.Index != n.configIndex || previous.Term != s.Term || previous.LeaderID != s.LeaderID {
 		n.membership.Store(n.membershipView())
-		if s.RaftState == raft.StateLeader && n.configIndex != 0 && (!exists || previous.Index != n.configIndex || previous.LeaderID != n.cfg.PeerID) {
+		if s.Role == raft.StateLeader.String() && n.configIndex != 0 && (!exists || previous.Index != n.configIndex || previous.LeaderID != n.cfg.PeerID) {
 			select {
 			case n.membershipEvents <- struct{}{}:
 			default:

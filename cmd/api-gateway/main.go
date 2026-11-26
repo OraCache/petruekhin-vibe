@@ -27,11 +27,8 @@ import (
 
 	controlplanev1 "github.com/OraCache/oracache/gen/controlplane/v1"
 	gatewayv1 "github.com/OraCache/oracache/gen/gateway/v1"
-<<<<<<< HEAD
-	"github.com/OraCache/oracache/internal/cpmetrics"
-=======
 	membershipv1 "github.com/OraCache/oracache/gen/membership/v1"
->>>>>>> 5b723f3 (CACHE-104 changes after the original #101)
+	"github.com/OraCache/oracache/internal/cpmetrics"
 	"github.com/OraCache/oracache/internal/gateway"
 )
 
