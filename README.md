@@ -22,7 +22,7 @@ go run ./cmd/oracache get demo:geo
 
 Если нужен просто весь стенд без показа холодного старта B: `make demo-up`.
 Остановить часть стенда: `make demo-stop-a`, `make demo-stop-b`, `make demo-stop-learner`
-или `make demo-stop-monitoring`. Остановить контейнер одной ноды — например, `make demo-stop-a-3`; это не удаляет её из Raft.
+или `make demo-stop-monitoring`. Чтобы остановить одну ноду, возьми её полный `node_id` с панели ролей Raft в Grafana: например, если лидер — `a-3`, выполни `make demo-stop-node ID=a-3`. Это останавливает контейнер, но не удаляет ноду из Raft.
 Ноды хранят состояние в памяти: **не запускай остановленную ноду с тем же ID обратно в живую группу**.
 `make demo-down` удаляет весь демостенд и его данные. Go E2E отдельно запускается через `make test-e2e`.
 

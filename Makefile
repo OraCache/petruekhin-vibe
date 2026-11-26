@@ -103,11 +103,10 @@ DEMO_PROFILES := --profile region-b --profile learner
 DEMO_A := cp-api api-gateway a-1 a-2 a-3
 DEMO_B := b-1 b-2 b-3
 DEMO_MONITORING := prometheus grafana
-DEMO_NODE_STOPS := $(addprefix demo-stop-,a-1 a-2 a-3 a-4 $(DEMO_B))
+DEMO_NODES := $(filter a-%,$(DEMO_A)) a-4 $(DEMO_B)
 
 .PHONY: demo-build demo-up demo-up-a demo-up-b demo-up-learner demo-up-monitoring \
-	demo-stop-a demo-stop-b demo-stop-learner demo-stop-monitoring demo-down \
-	$(DEMO_NODE_STOPS)
+	demo-stop-a demo-stop-b demo-stop-learner demo-stop-monitoring demo-stop-node demo-down
 
 demo-build:
 	$(DEMO) build cp-api
@@ -139,8 +138,9 @@ demo-stop-learner:
 demo-stop-monitoring:
 	$(DEMO) stop $(DEMO_MONITORING)
 
-$(DEMO_NODE_STOPS): demo-stop-%:
-	$(DEMO) $(DEMO_PROFILES) stop $*
+demo-stop-node:
+	$(if $(and $(filter 1,$(words $(ID))),$(filter $(DEMO_NODES),$(ID))),,$(error ID must be one node_id from Grafana: $(DEMO_NODES)))
+	$(DEMO) $(DEMO_PROFILES) stop $(filter $(DEMO_NODES),$(ID))
 
 demo-down:
 	$(DEMO) $(DEMO_PROFILES) down -v

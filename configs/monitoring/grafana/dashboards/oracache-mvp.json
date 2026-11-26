@@ -315,8 +315,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(2 * max by (instance) (oracache_raft_leader_at_max_term == 1) and on (instance) (up{job=\"storage-node\"} == 1))\nor on (instance) (max by (instance) (oracache_raft_is_follower == 1) and on (instance) (up{job=\"storage-node\"} == 1))\nor on (instance) (0 * max by (instance) (up{job=\"storage-node\"} == 1))\nor on (instance) (-1 + 0 * max by (instance) (up{job=\"storage-node\"} == 0))",
-          "legendFormat": "{{instance}}",
+          "expr": "label_replace(\n  (2 * max by (instance) (oracache_raft_leader_at_max_term == 1) and on (instance) (up{job=\"storage-node\"} == 1))\n  or on (instance) (max by (instance) (oracache_raft_is_follower == 1) and on (instance) (up{job=\"storage-node\"} == 1))\n  or on (instance) (0 * max by (instance) (up{job=\"storage-node\"} == 1))\n  or on (instance) (-1 + 0 * max by (instance) (up{job=\"storage-node\"} == 0)),\n  \"node_id\", \"$1\", \"instance\", \"(.+):[0-9]+\"\n)",
+          "legendFormat": "{{node_id}}",
           "datasource": {
             "type": "prometheus",
             "uid": "oracache-prometheus"

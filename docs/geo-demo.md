@@ -83,7 +83,7 @@ bin/oracache membership get --group-id=region-a/shard-0/replication-1 --region=r
 исходное значение и сделайте новую запись:
 
 ```bash
-make demo-stop-a-3
+make demo-stop-node ID=a-3
 bin/oracache get demo:geo
 bin/oracache put demo:geo after-replace
 ```

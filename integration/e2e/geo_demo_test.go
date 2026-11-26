@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"slices"
@@ -166,7 +167,7 @@ func TestStagedGeoDemo(t *testing.T) {
 		return read(ctx, cache, "before-b", seed.GetRev(), first.Write[0].NodeID)
 	})
 
-	prom := port("prometheus", "9090") + "/api/v1/targets"
+	prom := port("prometheus", "9090") + "/api/v1/"
 	wantHealth := map[string]string{
 		"cp-api:9464": "up", "api-gateway:9466": "up",
 		"a-1:28191": "up", "a-2:28191": "up", "a-3:28191": "up", "a-4:28191": "down",
@@ -184,7 +185,7 @@ func TestStagedGeoDemo(t *testing.T) {
 					}
 				}
 			}
-			if err := getJSON(ctx, prom, &out); err != nil {
+			if err := getJSON(ctx, prom+"targets", &out); err != nil {
 				return err
 			}
 			got := make(map[string]string)
@@ -199,10 +200,17 @@ func TestStagedGeoDemo(t *testing.T) {
 	}
 	checkTargets()
 	grafana := port("grafana", "3000") + "/api/dashboards/uid/oracache-mvp"
+	var rolesQuery string
 	waitGeo(t, ctx, "MVP dashboard provisioned", func(ctx context.Context) error {
 		var out struct {
 			Meta      struct{ Provisioned bool }
-			Dashboard struct{ UID string }
+			Dashboard struct {
+				UID    string
+				Panels []struct {
+					ID      int
+					Targets []struct{ Expr, LegendFormat string }
+				}
+			}
 		}
 		if err := getJSON(ctx, grafana, &out); err != nil {
 			return err
@@ -210,7 +218,13 @@ func TestStagedGeoDemo(t *testing.T) {
 		if !out.Meta.Provisioned || out.Dashboard.UID != "oracache-mvp" {
 			return fmt.Errorf("dashboard: %+v", out)
 		}
-		return nil
+		for _, panel := range out.Dashboard.Panels {
+			if panel.ID == 4 && len(panel.Targets) == 1 && panel.Targets[0].LegendFormat == "{{node_id}}" {
+				rolesQuery = panel.Targets[0].Expr
+				return nil
+			}
+		}
+		return fmt.Errorf("MVP role timeline must show node_id")
 	})
 	t.Logf("A accepted revision %d while B and a-4 were absent", seed.GetRev())
 
@@ -333,7 +347,7 @@ func TestStagedGeoDemo(t *testing.T) {
 		}
 		return fmt.Errorf("membership: %v, error: %v", m, err)
 	})
-	makeDemo("demo-stop-" + old.GetNodeId())
+	makeDemo("demo-stop-node", "ID="+old.GetNodeId())
 	wantHealth[old.GetNodeId()+":28191"] = "down"
 	checkTargets()
 	aVoters[slices.Index(aVoters, old.GetNodeId())] = "a-4"
@@ -352,6 +366,29 @@ func TestStagedGeoDemo(t *testing.T) {
 	}
 	verifyB("after-replace", updated.GetRev())
 	t.Logf("replaced %s with a-4; gateway write advanced revision %d → %d", old.GetNodeId(), seed.GetRev(), updated.GetRev())
+	waitGeo(t, ctx, "timeline identifies the leader and the stopped node by node_id", func(ctx context.Context) error {
+		var out struct {
+			Data struct {
+				Result []struct {
+					Metric map[string]string
+					Value  []json.RawMessage
+				}
+			}
+		}
+		if err := getJSON(ctx, prom+"query?query="+url.QueryEscape(rolesQuery), &out); err != nil {
+			return err
+		}
+		roles := make(map[string]string)
+		for _, series := range out.Data.Result {
+			if len(series.Value) == 2 {
+				roles[series.Metric["node_id"]] = string(series.Value[1])
+			}
+		}
+		if roles[serving] != `"2"` || roles[old.GetNodeId()] != `"-1"` {
+			return fmt.Errorf("expected leader %s and stopped node %s in the timeline, got %v", serving, old.GetNodeId(), roles)
+		}
+		return nil
+	})
 	makeDemo("demo-stop-learner", "demo-stop-b", "demo-stop-monitoring", "demo-stop-a")
 	if running := run(append(slices.Clone(profiles), "ps", "--status", "running", "--services")...); running != "" {
 		t.Fatalf("demo stop targets left services running: %s", running)
