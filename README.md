@@ -4,7 +4,11 @@
 
 `make` только запускает и останавливает контейнеры. Запросы и изменения состава Raft делай вручную через `oracache`. Нужны Docker Compose, `make` и Go 1.27.3 для CLI.
 
-**1. На пустом стенде подними A и мониторинг:** `make demo-up-a demo-up-monitoring`.
+**1. На пустом стенде подними A и мониторинг:**
+
+```sh
+make demo-init NODES="a-1 a-2 a-3" && make demo-up-a demo-up-monitoring
+```
 
 Дождись маршрута записи в [Gateway](http://127.0.0.1:39466/routes), затем запиши ключ до старта B:
 
@@ -16,11 +20,11 @@ go run ./cmd/oracache get demo:geo
 
 В [Prometheus](http://127.0.0.1:39090/targets) B и `a-4` пока `DOWN`; графики — в [Grafana](http://127.0.0.1:33000/d/oracache-mvp).
 
-**2. Подними B:** `make demo-up-b`. Прочитай контрольный ключ напрямую из лидера B; выбор порта и команда `get` — в [сценарии показа](docs/geo-demo.md#2-запустить-b-и-прочитать-контрольный-ключ-напрямую).
+**2. Подними B:** `make demo-init NODES="b-1 b-2 b-3" && make demo-up-b`. Прочитай контрольный ключ напрямую из лидера B; выбор порта и команда `get` — в [сценарии показа](docs/geo-demo.md#2-запустить-b-и-прочитать-контрольный-ключ-напрямую).
 
-**3. Подними `a-4`:** `make demo-up-learner`. Это только запуск процесса, нода ещё не в Raft. Дальше в CLI: `membership add-learner` → дождись, пока нода догонит лидера → `membership replace`. `replace` повышает learner и убирает старого voter одной операцией; отдельный `promote` перед ним не нужен. [Команды с аргументами](docs/geo-demo.md#3-запустить-learner-и-заменить-voter-в-a).
+**3. Подними `a-4`:** `make demo-init NODES=a-4 && make demo-up-learner`. Это только запуск процесса, нода ещё не в Raft. Дальше в CLI: `membership add-learner` → дождись, пока нода догонит лидера → `membership replace`. `replace` повышает learner и убирает старого voter одной операцией; отдельный `promote` перед ним не нужен. [Команды с аргументами](docs/geo-demo.md#3-запустить-learner-и-заменить-voter-в-a).
 
-Если нужен просто весь стенд без показа холодного старта B: `make demo-up`.
+Если нужен весь стенд сразу, с пустого проекта: `make demo-init NODES="a-1 a-2 a-3 a-4 b-1 b-2 b-3" && make demo-up`.
 
 **Нагрузка (по желанию).** После появления маршрута записи в Gateway запусти из корня репозитория:
 
@@ -32,7 +36,7 @@ go run ./cmd/storage-load -gateway=127.0.0.1:38080 -read-rps=100 -step=10s
 
 Остановить часть стенда: `make demo-stop-a`, `make demo-stop-b`, `make demo-stop-learner`
 или `make demo-stop-monitoring`. Чтобы остановить одну ноду, возьми её полный `node_id` с панели ролей Raft в Grafana: например, если лидер — `a-3`, выполни `make demo-stop-node ID=a-3`. Это останавливает контейнер, но не удаляет ноду из Raft.
-Ноды хранят состояние в памяти: **не запускай остановленную ноду с тем же ID обратно в живую группу**.
+Вернуть остановленную ноду, которая всё ещё состоит в Raft: `make demo-start-node ID=a-3`. Она восстановит состояние со своего volume и догонит лидера. `demo-init` — только для новых нод: если volume действующей ноды потерян, нужна замена через learner с новым `PeerID`.
 `make demo-down` удаляет весь демостенд и его данные. Go E2E отдельно запускается через `make test-e2e`.
 
 ## PoC с Control Plane и Gateway

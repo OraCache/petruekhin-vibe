@@ -9,7 +9,7 @@
 ## 1. Запустить A и записать контрольный ключ
 
 ```bash
-make demo-up-a demo-up-monitoring
+make demo-init NODES="a-1 a-2 a-3" && make demo-up-a demo-up-monitoring
 go build -o bin/oracache ./cmd/oracache
 export ORACACHE_ENDPOINT=127.0.0.1:38080
 curl -fsS http://127.0.0.1:39466/routes
@@ -32,7 +32,7 @@ Raft. В [Prometheus](http://127.0.0.1:39090/targets) ещё не запущен
 ## 2. Запустить B и прочитать контрольный ключ напрямую
 
 ```bash
-make demo-up-b
+make demo-init NODES="b-1 b-2 b-3" && make demo-up-b
 for port in 39191 39192 39193; do curl -fsS "http://127.0.0.1:$port/status"; done
 ```
 
@@ -55,7 +55,7 @@ ORACACHE_ENDPOINT=127.0.0.1:39091 bin/oracache get demo:geo --rev=1
 `ORACACHE_ENDPOINT` остаётся адресом Gateway из шага 1.
 
 ```bash
-make demo-up-learner
+make demo-init NODES=a-4 && make demo-up-learner
 bin/oracache membership get --group-id=region-a/shard-0/replication-1 --region=region-a
 bin/oracache membership add-learner --group-id=region-a/shard-0/replication-1 --region=region-a --operation-id=add-a4 \
   --peer-id=4 --node-id=a-4 --address=a-4:28091 --raft-address=http://a-4:28191/raft
@@ -92,11 +92,26 @@ bin/oracache put demo:geo after-replace
 репликацию именно с новой ноды, повторите запись после того, как `membership get`
 покажет `leaderId: 4` в A.
 
+## Проверить перевыборы и возврат ноды
+
+В Grafana возьмите `node_id` текущего лидера A. Например, для `a-2`:
+
+```bash
+make demo-stop-node ID=a-2
+```
+
+Когда в Grafana появится новый лидер A, через Gateway прочитайте контрольный ключ и сделайте новую запись. Затем верните остановленную ноду, не меняя состав Raft:
+
+```bash
+make demo-start-node ID=a-2
+```
+
+Нода восстанавливает Raft и кеш со своего volume. Дождитесь, пока её `AppliedIndex` догонит индекс записанной операции. Если ноду уже удалили из Raft, этим способом её не возвращают. Если volume потерян, не запускайте `demo-init` для старого ID: добавьте замену с новым `PeerID` как learner.
+
 ## Остановить стенд
 
 При ошибке посмотрите `docker compose -f compose.geo-demo.yaml logs --tail=50`.
-Не перезапускайте отдельный остановленный узел: состояние Raft только в памяти,
-а пустой процесс не должен возвращаться в работающую группу с тем же ID.
+
 Для повтора сбросьте весь демостенд. Команда удалит все его данные:
 
 ```bash
