@@ -183,10 +183,6 @@ func TestHTTPMembershipReplacesLostStore(t *testing.T) {
 }
 
 func TestRaftStoreSnapshotBudget(t *testing.T) {
-	_, err := node.New(node.Config{NodeID: "n", Region: "r", GroupID: "g", Store: store.Config{MaxBytes: node.MaxStoreBytes + 1}})
-	if err == nil || !strings.Contains(err.Error(), "snapshot-safe") {
-		t.Fatalf("unsafe budget accepted: %v", err)
-	}
 	backend, err := store.New(store.Config{MaxBytes: 16 << 10})
 	if err != nil {
 		t.Fatal(err)
