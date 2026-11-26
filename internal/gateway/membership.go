@@ -7,6 +7,8 @@ import (
 	"time"
 
 	pb "github.com/OraCache/oracache/gen/membership/v1"
+	"github.com/OraCache/oracache/internal/tracing"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -17,7 +19,8 @@ import (
 // NotLeader hints only when the hinted address belongs to that group.
 type MembershipForwarder struct {
 	pb.UnimplementedMembershipAdminServer
-	Router *Router
+	Router         *Router
+	TracerProvider trace.TracerProvider
 }
 
 func (f *MembershipForwarder) call(ctx context.Context, group, region string, partition uint32, read bool, invoke func(context.Context, pb.MembershipAdminClient) (any, error)) (any, error) {
@@ -36,7 +39,7 @@ func (f *MembershipForwarder) call(ctx context.Context, group, region string, pa
 			continue
 		}
 		seen[address] = true
-		conn, dialErr := grpc.NewClient(address, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithDisableRetry())
+		conn, dialErr := grpc.NewClient(address, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithDisableRetry(), tracing.ClientOption(f.TracerProvider))
 		if dialErr != nil {
 			return nil, status.Error(codes.Unavailable, dialErr.Error())
 		}

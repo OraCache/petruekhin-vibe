@@ -30,8 +30,10 @@ import (
 	"github.com/OraCache/oracache/internal/cpmetrics"
 	"github.com/OraCache/oracache/internal/replication"
 	"github.com/OraCache/oracache/internal/store"
+	"github.com/OraCache/oracache/internal/tracing"
 	"github.com/OraCache/oracache/shardraft"
 	"go.etcd.io/raft/v3"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -80,7 +82,8 @@ type Config struct {
 	SnapshotEntries  uint64
 	MaxRaftWireBytes int64
 
-	Logger *slog.Logger
+	Logger         *slog.Logger
+	TracerProvider trace.TracerProvider
 }
 
 // Node is one storage-node module. Create with New, run with Run.
@@ -216,7 +219,7 @@ func New(cfg Config) (_ *Node, retErr error) {
 	if n.agent != nil {
 		interceptors = append(interceptors, n.requireMasterForWrites)
 	}
-	n.grpcSrv = grpc.NewServer(grpc.MaxRecvMsgSize(16<<20), grpc.ChainUnaryInterceptor(interceptors...))
+	n.grpcSrv = grpc.NewServer(grpc.MaxRecvMsgSize(16<<20), grpc.ChainUnaryInterceptor(interceptors...), tracing.ServerOption(cfg.TracerProvider))
 	pb.RegisterCacheGatewayServer(n.grpcSrv, shardraft.GatewayServer(n.inst))
 	membershipv1.RegisterMembershipAdminServer(n.grpcSrv, &membershipServer{n: n})
 	if rc.SourceRegion != "" {

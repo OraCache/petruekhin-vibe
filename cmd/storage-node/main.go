@@ -15,6 +15,7 @@ import (
 	"syscall"
 
 	"github.com/OraCache/oracache/internal/node"
+	"github.com/OraCache/oracache/internal/tracing"
 	"github.com/OraCache/oracache/shardraft"
 )
 
@@ -81,6 +82,15 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	cfg.Logger = logger
 
+	if !cfg.RaftInit {
+		tp, shutdownTracing, err := tracing.Start("storage-node", cfg.NodeID)
+		if err != nil {
+			logger.Error("configure tracing", "error", err)
+			os.Exit(1)
+		}
+		cfg.TracerProvider = tp
+		defer shutdownTracing(logger)
+	}
 	n, err := node.New(cfg)
 	if err != nil {
 		logger.Error("configure node", "error", err)

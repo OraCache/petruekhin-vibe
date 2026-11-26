@@ -22,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
@@ -30,6 +31,7 @@ import (
 	membershipv1 "github.com/OraCache/oracache/gen/membership/v1"
 	"github.com/OraCache/oracache/internal/cpmetrics"
 	"github.com/OraCache/oracache/internal/gateway"
+	"github.com/OraCache/oracache/internal/tracing"
 )
 
 const defaultStatusListen = "127.0.0.1:9466"
@@ -88,6 +90,13 @@ func main() {
 	defer stop()
 	defer stopStatus()
 
+	tp, shutdownTracing, err := tracing.Start("api-gateway", *nodeID)
+	if err != nil {
+		logger.Error("configure tracing", "error", err)
+		os.Exit(1)
+	}
+	defer shutdownTracing(logger)
+
 	var serveErr <-chan error
 	if *listen != "" {
 		listener, err := net.Listen("tcp", *listen)
@@ -95,7 +104,7 @@ func main() {
 			logger.Error("client gRPC listen", "address", *listen, "error", err)
 			os.Exit(1)
 		}
-		done, stopRPC := serveGateway(listener, poller, metrics, logger)
+		done, stopRPC := serveGateway(listener, poller, metrics, logger, tp)
 		defer stopRPC()
 		serveErr = done
 		logger.Info("api-gateway client endpoint listening", "address", listener.Addr().String())
@@ -122,11 +131,11 @@ func main() {
 	}
 }
 
-func serveGateway(listener net.Listener, poller *gateway.Poller, metrics *cpmetrics.Metrics, logger *slog.Logger) (<-chan error, func()) {
-	forwarder := &gateway.Forwarder{Router: poller.Router, Logger: logger, OnNotLeader: poller.RequestRefresh, Metrics: poller.Metrics}
-	server := grpc.NewServer(grpc.MaxRecvMsgSize(16<<20), grpc.UnaryInterceptor(cpmetrics.CacheRPCInterceptor(metrics.Prometheus())))
+func serveGateway(listener net.Listener, poller *gateway.Poller, metrics *cpmetrics.Metrics, logger *slog.Logger, tp trace.TracerProvider) (<-chan error, func()) {
+	forwarder := &gateway.Forwarder{Router: poller.Router, Logger: logger, OnNotLeader: poller.RequestRefresh, Metrics: poller.Metrics, TracerProvider: tp}
+	server := grpc.NewServer(grpc.MaxRecvMsgSize(16<<20), grpc.UnaryInterceptor(cpmetrics.CacheRPCInterceptor(metrics.Prometheus())), tracing.ServerOption(tp))
 	gatewayv1.RegisterCacheGatewayServer(server, forwarder)
-	membershipv1.RegisterMembershipAdminServer(server, &gateway.MembershipForwarder{Router: poller.Router})
+	membershipv1.RegisterMembershipAdminServer(server, &gateway.MembershipForwarder{Router: poller.Router, TracerProvider: tp})
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
 	return done, func() {

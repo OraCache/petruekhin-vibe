@@ -88,7 +88,7 @@ func TestMembershipThroughGatewayAndCPProjection(t *testing.T) {
 	poller := gateway.NewPoller(controlplanev1.NewControlPlaneAPIClient(raftTestClient(t, cpListener)), router, "membership-test-gateway")
 	poller.Logger = logger
 	gwListener := raftTestListener(t)
-	_, stopGateway := serveGateway(gwListener, poller, cpmetrics.NewRegistry(), logger)
+	_, stopGateway := serveGateway(gwListener, poller, cpmetrics.NewRegistry(), logger, nil)
 	t.Cleanup(stopGateway)
 	conn := raftTestClient(t, gwListener)
 	admin := membershipv1.NewMembershipAdminClient(conn)

@@ -10,6 +10,8 @@ import (
 	"time"
 
 	pb "github.com/OraCache/oracache/gen/gateway/v1"
+	"github.com/OraCache/oracache/internal/tracing"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -45,6 +47,7 @@ type Forwarder struct {
 	Logger         *slog.Logger
 	Metrics        *Metrics
 	OnNotLeader    func() // schedules a background refresh, never waits for CP
+	TracerProvider trace.TracerProvider
 
 	mu        sync.Mutex
 	conns     map[string]*grpc.ClientConn
@@ -71,7 +74,7 @@ func (f *Forwarder) client(addr string) (pb.CacheGatewayClient, error) {
 		return pb.NewCacheGatewayClient(c), nil
 	}
 	c, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithDisableRetry(),
+		grpc.WithDisableRetry(), tracing.ClientOption(f.TracerProvider),
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(16<<20)))
 	if err != nil {
 		return nil, err

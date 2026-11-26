@@ -4,6 +4,7 @@ import (
 	"context"
 
 	pb "github.com/OraCache/oracache/gen/gateway/v1"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -34,14 +35,31 @@ func (n *Instance) call(ctx context.Context, op operation, message proto.Message
 		return nil, unavailable("instance is not running")
 	}
 	r := request{ctx: ctx, op: op, data: data, reply: make(chan result, 1)}
+	var tracer trace.Tracer
+	var admission trace.Span
+	if parent := trace.SpanFromContext(ctx); op <= opBatchPut && parent.IsRecording() {
+		tracer = parent.TracerProvider().Tracer("oracache/shardraft")
+		_, admission = tracer.Start(ctx, "raft.admission")
+	}
+	var admissionErr error
 	select {
 	case n.requests <- r:
 	case <-ctx.Done():
-		return nil, status.FromContextError(ctx.Err()).Err()
+		admissionErr = status.FromContextError(ctx.Err()).Err()
 	case <-n.stop:
-		return nil, unavailable("instance stopping")
+		admissionErr = unavailable("instance stopping")
 	case <-n.done:
-		return nil, unavailable("instance stopped")
+		admissionErr = unavailable("instance stopped")
+	}
+	if admission != nil {
+		admission.End()
+	}
+	if admissionErr != nil {
+		return nil, admissionErr
+	}
+	if tracer != nil {
+		_, result := tracer.Start(ctx, "raft.result")
+		defer result.End()
 	}
 	select {
 	case response := <-r.reply:

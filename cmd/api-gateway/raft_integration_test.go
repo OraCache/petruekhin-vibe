@@ -19,6 +19,9 @@ import (
 	"github.com/OraCache/oracache/internal/gateway"
 	"github.com/OraCache/oracache/internal/node"
 	"github.com/OraCache/oracache/internal/statestore"
+	"go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	oteltrace "go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -32,6 +35,9 @@ func TestGatewayRoutesRealRaftThroughLeaderAndControlPlaneLoss(t *testing.T) {
 	t.Cleanup(cancel)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	store := statestore.NewMemory()
+	spans := tracetest.NewSpanRecorder()
+	tp := trace.NewTracerProvider(trace.WithSpanProcessor(spans), trace.WithSampler(trace.AlwaysSample()))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 
 	var cpUnavailable atomic.Bool
 	cpListener := raftTestListener(t)
@@ -73,7 +79,7 @@ func TestGatewayRoutesRealRaftThroughLeaderAndControlPlaneLoss(t *testing.T) {
 			NodeID: peer.NodeID, Region: region, GroupID: "integration/group", PeerID: peer.ID, Peers: peers,
 			GRPCListener: clientListeners[i], RaftListener: raftListeners[i], CPAddr: cpListener.Addr().String(),
 			HeartbeatInterval: time.Second, ConfigPullInterval: time.Second, TickInterval: 25 * time.Millisecond,
-			ElectionTicks: 10, Logger: logger,
+			ElectionTicks: 10, Logger: logger, TracerProvider: tp,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -96,7 +102,7 @@ func TestGatewayRoutesRealRaftThroughLeaderAndControlPlaneLoss(t *testing.T) {
 	poller := gateway.NewPoller(controlplanev1.NewControlPlaneAPIClient(cpConn), router, "test-gateway")
 	poller.Logger, poller.RPCTimeout = logger, 300*time.Millisecond
 	listener := raftTestListener(t)
-	_, stopGateway := serveGateway(listener, poller, cpmetrics.NewRegistry(), logger)
+	_, stopGateway := serveGateway(listener, poller, cpmetrics.NewRegistry(), logger, tp)
 	t.Cleanup(stopGateway)
 	client := gatewayv1.NewCacheGatewayClient(raftTestClient(t, listener))
 
@@ -115,6 +121,8 @@ func TestGatewayRoutesRealRaftThroughLeaderAndControlPlaneLoss(t *testing.T) {
 	if err != nil || seed.GetStatus() != gatewayv1.PutStatus_PUT_STATUS_OK {
 		t.Fatalf("initial PUT: %v, %v", seed, err)
 	}
+
+	assertPutTrace(t, ctx, spans)
 
 	cpUnavailable.Store(true)
 	oldTerm := members[oldLeader].Status().Term
@@ -157,6 +165,47 @@ func TestGatewayRoutesRealRaftThroughLeaderAndControlPlaneLoss(t *testing.T) {
 		leader, err := router.WriteLeader(0)
 		return err == nil && leader.NodeID == newLeader && router.Revision() == topology.Revision
 	})
+}
+
+func assertPutTrace(t *testing.T, ctx context.Context, spans *tracetest.SpanRecorder) {
+	t.Helper()
+	waitRaftScenario(t, ctx, "five spans for gateway PUT", func() bool { return len(spans.Ended()) >= 5 })
+	ended := spans.Ended()
+	if len(ended) != 5 {
+		t.Fatalf("PUT spans = %d, want 5", len(ended))
+	}
+	var gateway, forwarded, storage trace.ReadOnlySpan
+	for _, span := range ended {
+		if span.SpanKind() == oteltrace.SpanKindClient {
+			forwarded = span
+		} else if span.SpanKind() == oteltrace.SpanKindServer {
+			if !span.Parent().IsValid() {
+				gateway = span
+			} else {
+				storage = span
+			}
+		}
+	}
+	if gateway == nil || forwarded == nil || storage == nil ||
+		forwarded.Parent().SpanID() != gateway.SpanContext().SpanID() ||
+		storage.Parent().SpanID() != forwarded.SpanContext().SpanID() || !storage.Parent().IsRemote() {
+		t.Fatal("want gateway server → gateway client → storage server")
+	}
+	waits := map[string]bool{}
+	for _, span := range ended {
+		if span.SpanContext().TraceID() != gateway.SpanContext().TraceID() {
+			t.Fatalf("span %q started a separate trace", span.Name())
+		}
+		if span.SpanKind() == oteltrace.SpanKindInternal {
+			if span.Parent().SpanID() != storage.SpanContext().SpanID() || len(span.Attributes()) != 0 {
+				t.Fatalf("unexpected parent or attributes for %s", span.Name())
+			}
+			waits[span.Name()] = true
+		}
+	}
+	if !waits["raft.admission"] || !waits["raft.result"] {
+		t.Fatalf("missing Raft waits: %v", waits)
+	}
 }
 
 func raftTestListener(t *testing.T) net.Listener {
