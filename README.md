@@ -20,9 +20,35 @@ go run ./cmd/oracache get demo:geo
 
 В [Prometheus](http://127.0.0.1:39090/targets) B и `a-4` пока `DOWN`; графики — в [Grafana](http://127.0.0.1:33000/d/oracache-mvp).
 
-**2. Подними B:** `make demo-init NODES="b-1 b-2 b-3" && make demo-up-b`. Прочитай контрольный ключ напрямую из лидера B; выбор порта и команда `get` — в [сценарии показа](docs/geo-demo.md#2-запустить-b-и-прочитать-контрольный-ключ-напрямую).
+**2. Подними B и прочитай тот же ключ через Gateway B:**
 
-**3. Подними `a-4`:** `make demo-init NODES=a-4 && make demo-up-learner`. Это только запуск процесса, нода ещё не в Raft. Дальше в CLI: `membership add-learner` → дождись, пока нода догонит лидера → `membership replace`. `replace` повышает learner и убирает старого voter одной операцией; отдельный `promote` перед ним не нужен. [Команды с аргументами](docs/geo-demo.md#3-запустить-learner-и-заменить-voter-в-a).
+```sh
+make demo-init NODES="b-1 b-2 b-3" && make demo-up-b
+ORACACHE_ENDPOINT=127.0.0.1:39080 go run ./cmd/oracache get demo:geo
+```
+
+Дождись `GET_STATUS_HIT`: ревизия должна совпасть с записью в A, а `servedBy.instance` — быть `b-1`, `b-2` или `b-3`. Gateway сам найдёт лидера B.
+
+**3. Подними `a-4` и добавь её в Raft через Gateway A:**
+
+```sh
+make demo-init NODES=a-4 && make demo-up-learner
+go run ./cmd/oracache membership add-learner --group-id=region-a/shard-0/replication-1 --region=region-a --operation-id=add-a4 --peer-id=4 --node-id=a-4 --address=a-4:28091 --raft-address=http://a-4:28191/raft
+go run ./cmd/oracache membership get --group-id=region-a/shard-0/replication-1 --region=region-a
+```
+
+Когда `a-4` догонит лидера (по `AppliedIndex` в Grafana), выбери старую ноду, которая не лидер. Например, если это `a-3`:
+
+```sh
+go run ./cmd/oracache membership replace --group-id=region-a/shard-0/replication-1 --region=region-a --operation-id=replace-a3-with-a4 --old-peer-id=3 --learner-id=4
+```
+
+`replace` повышает learner и удаляет старого voter одной операцией. Проверь, что новая запись тоже доехала:
+
+```sh
+go run ./cmd/oracache put demo:geo after-replace
+ORACACHE_ENDPOINT=127.0.0.1:39080 go run ./cmd/oracache get demo:geo
+```
 
 Если нужен весь стенд сразу, с пустого проекта: `make demo-init NODES="a-1 a-2 a-3 a-4 b-1 b-2 b-3" && make demo-up`.
 

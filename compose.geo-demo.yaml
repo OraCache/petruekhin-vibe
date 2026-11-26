@@ -64,6 +64,12 @@ services:
       - --status-listen=0.0.0.0:9466
       - --poll-interval=1s
     ports: ["127.0.0.1:${ORACACHE_GEO_HOST_PORT:-38080}:28080", "127.0.0.1:${ORACACHE_GEO_HOST_PORT:-39466}:9466"]
+  api-gateway-b:
+    <<: *app
+    profiles: [region-b]
+    depends_on: [cp-api]
+    command: [/api-gateway, --region=region-b, --node-id=gw-b, --cp-addr=cp-api:28081, --listen=0.0.0.0:28080, --status-listen=0.0.0.0:9466, --poll-interval=1s]
+    ports: ["127.0.0.1:${ORACACHE_GEO_HOST_PORT:-39080}:28080"]
   a-1:
     <<: *a
     volumes: ["a-1-raft:/raft"]
@@ -86,17 +92,17 @@ services:
     <<: *b
     volumes: ["b-1-raft:/raft"]
     command: [--node-id=b-1, --peer-id=1]
-    ports: ["127.0.0.1:${ORACACHE_GEO_HOST_PORT:-39091}:28091", "127.0.0.1:${ORACACHE_GEO_HOST_PORT:-39191}:28191"]
+
   b-2:
     <<: *b
     volumes: ["b-2-raft:/raft"]
     command: [--node-id=b-2, --peer-id=2]
-    ports: ["127.0.0.1:${ORACACHE_GEO_HOST_PORT:-39092}:28091", "127.0.0.1:${ORACACHE_GEO_HOST_PORT:-39192}:28191"]
+
   b-3:
     <<: *b
     volumes: ["b-3-raft:/raft"]
     command: [--node-id=b-3, --peer-id=3]
-    ports: ["127.0.0.1:${ORACACHE_GEO_HOST_PORT:-39093}:28091", "127.0.0.1:${ORACACHE_GEO_HOST_PORT:-39193}:28191"]
+
   prometheus:
     image: prom/prometheus:v3.5.0
     ports: ["127.0.0.1:${ORACACHE_GEO_HOST_PORT:-39090}:9090"]

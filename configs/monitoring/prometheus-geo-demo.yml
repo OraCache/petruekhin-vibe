@@ -12,7 +12,7 @@ scrape_configs:
       - targets: ["cp-api:9464"]
   - job_name: api-gateway
     static_configs:
-      - targets: ["api-gateway:9466"]
+      - targets: ["api-gateway:9466", "api-gateway-b:9466"]
   - job_name: storage-node
     static_configs:
       - targets: ["a-1:28191", "a-2:28191", "a-3:28191", "a-4:28191", "b-1:28191", "b-2:28191", "b-3:28191"]

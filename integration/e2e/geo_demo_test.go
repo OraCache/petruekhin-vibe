@@ -135,7 +135,7 @@ func TestStagedGeoDemo(t *testing.T) {
 
 	makeDemo("demo-init", "NODES=a-1 a-2 a-3")
 	makeDemo("demo-up-a", "demo-up-monitoring")
-	absent(append([]string{"a-4"}, bNodes...)...)
+	absent(append([]string{"a-4", "api-gateway-b"}, bNodes...)...)
 	conn := dial(port("api-gateway", "28080"))
 	cache := pb.NewCacheGatewayClient(conn)
 	admin := membership.NewMembershipAdminClient(conn)
@@ -175,7 +175,8 @@ func TestStagedGeoDemo(t *testing.T) {
 	prom := port("prometheus", "9090") + "/api/v1/"
 	wantHealth := map[string]string{
 		"cp-api:9464": "up", "api-gateway:9466": "up",
-		"a-1:28191": "up", "a-2:28191": "up", "a-3:28191": "up", "a-4:28191": "down",
+		"api-gateway-b:9466": "down",
+		"a-1:28191":          "up", "a-2:28191": "up", "a-3:28191": "up", "a-4:28191": "down",
 		"b-1:28191": "down", "b-2:28191": "down", "b-3:28191": "down",
 	}
 	checkTargets := func() {
@@ -237,39 +238,27 @@ func TestStagedGeoDemo(t *testing.T) {
 	makeDemo("demo-up-b")
 	absent("a-4")
 	type replicaStatus struct {
-		Role         string
-		Ready        bool
 		IsLearner    bool
 		Member       bool
 		Running      bool
 		AppliedIndex uint64
 	}
-	bStatuses := make(map[string]string)
-	bClients := make(map[string]pb.CacheGatewayClient)
+	wantHealth["api-gateway-b:9466"] = "up"
 	for _, node := range bNodes {
 		wantHealth[node+":28191"] = "up"
-		bStatuses[node] = port(node, "28191") + "/status"
-		bClients[node] = pb.NewCacheGatewayClient(dial(port(node, "28091")))
 	}
 	checkTargets()
+	cacheB := pb.NewCacheGatewayClient(dial(port("api-gateway-b", "28080")))
 	verifyB := func(value string, rev uint64) {
 		t.Helper()
-		waitGeo(t, ctx, fmt.Sprintf("B leader has %q at source revision %d", value, rev), func(ctx context.Context) error {
-			var states []string
-			for _, node := range bNodes {
-				var st replicaStatus
-				err := getJSON(ctx, bStatuses[node], &st)
-				if err == nil && st.Ready && st.Role == "StateLeader" {
-					// Direct storage replies do not carry the gateway's ServedBy metadata.
-					if err := read(ctx, bClients[node], value, rev, ""); err != nil {
-						return fmt.Errorf("direct read from %s: %w", node, err)
-					}
-					t.Logf("direct read from %s confirmed revision %d", node, rev)
-					return nil
-				}
-				states = append(states, fmt.Sprintf("%s: %+v (%v)", node, st, err))
+		waitGeo(t, ctx, fmt.Sprintf("Gateway B serves %q at source revision %d", value, rev), func(ctx context.Context) error {
+			out, err := cacheB.Get(ctx, &pb.GetRequest{Key: key, Rev: rev})
+			if err != nil || out.GetStatus() != pb.GetStatus_GET_STATUS_HIT || out.GetRev() != rev ||
+				string(out.GetData()) != value || !slices.Contains(bNodes, out.GetServedBy().GetInstance()) {
+				return fmt.Errorf("Get through Gateway B: response=%v error=%v; want %q rev %d served by B", out, err, value, rev)
 			}
-			return fmt.Errorf("no ready B leader: %s", strings.Join(states, "; "))
+			t.Logf("Gateway B confirmed revision %d served by %s", rev, out.GetServedBy().GetInstance())
+			return nil
 		})
 	}
 	verifyB("before-b", seed.GetRev())

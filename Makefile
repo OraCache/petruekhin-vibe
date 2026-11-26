@@ -124,7 +124,7 @@ demo-up-a: demo-build
 	$(DEMO) up -d --no-build --no-recreate $(DEMO_A)
 
 demo-up-b:
-	$(DEMO) up -d --no-build --no-deps --no-recreate $(DEMO_B)
+	$(DEMO) up -d --no-build --no-deps --no-recreate api-gateway-b $(DEMO_B)
 
 demo-up-learner:
 	$(DEMO) up -d --no-build --no-deps --no-recreate a-4
@@ -136,7 +136,7 @@ demo-stop-a:
 	$(DEMO) stop $(DEMO_A)
 
 demo-stop-b:
-	$(DEMO) --profile region-b stop $(DEMO_B)
+	$(DEMO) --profile region-b stop api-gateway-b $(DEMO_B)
 
 demo-stop-learner:
 	$(DEMO) --profile learner stop a-4
