@@ -3,7 +3,6 @@ package node_test
 import (
 	"context"
 	"fmt"
-	"github.com/OraCache/oracache/internal/replication"
 	"io"
 	"log/slog"
 	"net"
@@ -15,8 +14,10 @@ import (
 	"github.com/OraCache/oracache/internal/cpapi"
 	"github.com/OraCache/oracache/internal/cpconfig"
 	"github.com/OraCache/oracache/internal/node"
+	"github.com/OraCache/oracache/internal/replication"
 	"github.com/OraCache/oracache/internal/statestore"
 	"github.com/OraCache/oracache/internal/store"
+	"github.com/OraCache/oracache/shardraft"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -24,14 +25,15 @@ import (
 )
 
 type regionTestGroup struct {
-	t          *testing.T
-	ctx        context.Context
-	nodes      [3]*node.Node
-	clients    [3]pb.CacheGatewayClient
-	grpc, raft [3]net.Listener
-	done       [3]chan error
-	stopped    [3]bool
-	cpAddr     string
+	t             *testing.T
+	ctx           context.Context
+	nodes         [3]*node.Node
+	clients       [3]pb.CacheGatewayClient
+	grpc, raft    [3]net.Listener
+	done          [3]chan error
+	stopped       [3]bool
+	cpAddr        string
+	electionTicks int
 }
 
 func newRegionGroup(t *testing.T, ctx context.Context) *regionTestGroup {
@@ -49,7 +51,7 @@ func (g *regionTestGroup) configure(region string, cfg replication.Config) {
 		peers = append(peers, node.Peer{ID: uint64(i + 1), NodeID: fmt.Sprintf("%s-%d", region, i), ClientAddr: g.grpc[i].Addr().String(), RaftURL: "http://" + g.raft[i].Addr().String() + "/raft"})
 	}
 	for i := range g.nodes {
-		n, err := node.New(node.Config{NodeID: peers[i].NodeID, Region: region, GroupID: region + "/0/test", PeerID: peers[i].ID, Peers: peers, GRPCListener: g.grpc[i], RaftListener: g.raft[i], Replication: cfg, CPAddr: g.cpAddr, ConfigPullInterval: 20 * time.Millisecond, HeartbeatInterval: 20 * time.Millisecond, SnapshotEntries: 4, TickInterval: 20 * time.Millisecond, RequestTimeout: time.Second, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+		n, err := node.New(node.Config{NodeID: peers[i].NodeID, Region: region, GroupID: region + "/0/test", PeerID: peers[i].ID, Peers: peers, GRPCListener: g.grpc[i], RaftListener: g.raft[i], Replication: cfg, CPAddr: g.cpAddr, ConfigPullInterval: 20 * time.Millisecond, HeartbeatInterval: 20 * time.Millisecond, SnapshotEntries: 4, TickInterval: 20 * time.Millisecond, ElectionTicks: g.electionTicks, RequestTimeout: time.Second, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 		if err != nil {
 			g.t.Fatal(err)
 		}
@@ -198,7 +200,7 @@ func eventuallyReplication(t *testing.T, ctx context.Context, condition func() b
 	}
 }
 
-func TestCrossRegionReplicationBacklogSnapshotsAndBothLeaderChanges(t *testing.T) {
+func TestCrossRegionReplicationBacklogSurvivesLearnerReplacement(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	a, b := newRegionGroup(t, ctx), newRegionGroup(t, ctx)
@@ -225,6 +227,8 @@ func TestCrossRegionReplicationBacklogSnapshotsAndBothLeaderChanges(t *testing.T
 	go func() { _ = server.Serve(cpListener) }()
 	defer server.Stop()
 	a.cpAddr = cpListener.Addr().String()
+	// Leave the replacement a clear election window once the old leader stops.
+	a.electionTicks = 100
 	a.configure("a", replication.Config{TargetRegion: "b"})
 	b.configure("b", replication.Config{SourceRegion: "a", SourceGroupID: "a/0/test"})
 	a.start(0)
@@ -251,13 +255,86 @@ func TestCrossRegionReplicationBacklogSnapshotsAndBothLeaderChanges(t *testing.T
 	eventuallyReplication(t, ctx, func() bool {
 		return a.nodes[2].Status().SnapshotIndex > 0 && a.nodes[2].Store().Peek("k", 0).LatestRev == revisions[5]
 	})
+	joinGRPC, joinRaft := storageListen(t), storageListen(t)
+	join := node.Peer{ID: 4, NodeID: "a-3", ClientAddr: joinGRPC.Addr().String(), RaftURL: "http://" + joinRaft.Addr().String() + "/raft"}
+	seed := node.Peer{ID: uint64(first + 1), NodeID: fmt.Sprintf("a-%d", first), ClientAddr: a.grpc[first].Addr().String(), RaftURL: "http://" + a.raft[first].Addr().String() + "/raft"}
+	learner, err := node.New(node.Config{
+		NodeID: join.NodeID, PeerID: join.ID, Region: "a", GroupID: "a/0/test", Join: true,
+		Peers: []node.Peer{seed, join}, GRPCListener: joinGRPC, RaftListener: joinRaft,
+		Replication: replication.Config{TargetRegion: "b"}, CPAddr: a.cpAddr,
+		ConfigPullInterval: 20 * time.Millisecond, HeartbeatInterval: 20 * time.Millisecond,
+		SnapshotEntries: 4, TickInterval: 20 * time.Millisecond, ElectionTicks: 10,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- learner.Run(ctx) }()
+	t.Cleanup(func() {
+		learner.Close()
+		if err := <-done; err != nil {
+			t.Error(err)
+		}
+	})
+	awaitJoin := func(want string, condition func() bool) {
+		t.Helper()
+		stage, cancel := context.WithTimeout(ctx, 8*time.Second)
+		defer cancel()
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for !condition() {
+			select {
+			case <-ticker.C:
+			case <-stage.Done():
+				t.Fatalf("%s: %+v (%v)", want, learner.Status(), stage.Err())
+			}
+		}
+	}
+	awaitJoin("unattached node running", func() bool { return learner.Status().Running })
+	if s := learner.Status(); s.Member || s.IsLearner || s.Ready {
+		t.Fatalf("unattached node advertises membership or readiness: %+v", s)
+	}
+	leader := a.nodes[first]
+	if _, err := leader.AddLearner(ctx, "add-a4", shardraft.Peer{ID: join.ID, NodeID: join.NodeID, Address: join.ClientAddr, RaftAddress: join.RaftURL}); err != nil {
+		t.Fatal("add learner:", err)
+	}
+	awaitJoin("learner restores a snapshot with the last write", func() bool {
+		s := learner.Status()
+		return s.IsLearner && !s.Ready && s.SnapshotIndex > 0 && s.AppliedIndex >= leader.Status().CommitIndex &&
+			learner.Store().Peek("k", 0).LatestRev == revisions[5]
+	})
+	awaitJoin("replace", func() bool {
+		_, err := leader.Replace(ctx, "replace-a3", 3, join.ID)
+		if err != nil && status.Code(err) != codes.FailedPrecondition {
+			t.Fatal("replace:", err)
+		}
+		return err == nil
+	})
+	awaitJoin("replacement voter with final configuration", func() bool {
+		return learner.Status().Ready && !learner.Membership().Joint
+	})
+	a.stop(2)
 	a.stop(first)
-	next := a.leader()
+	awaitJoin("replacement becomes leader", func() bool {
+		s := learner.Status()
+		return s.Ready && s.Role == "StateLeader"
+	})
+	conn, err := grpc.NewClient(join.ClientAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	source := pb.NewCacheGatewayClient(conn)
 	for i := range b.nodes {
 		b.start(i)
 	}
 	dest := b.leader()
 	eventuallyReplication(t, ctx, func() bool {
+		got, err := b.clients[dest].Get(ctx, &pb.GetRequest{Key: "k", Rev: revisions[5]})
+		if err != nil || got.GetStatus() != pb.GetStatus_GET_STATUS_HIT || got.GetRev() != revisions[5] || string(got.GetData()) != "5" {
+			return false
+		}
 		for _, n := range b.nodes {
 			for _, rev := range revisions[3:] {
 				if n.Store().Peek("k", rev).Status != store.GetHit {
@@ -270,7 +347,7 @@ func TestCrossRegionReplicationBacklogSnapshotsAndBothLeaderChanges(t *testing.T
 	if _, err := b.clients[dest].Put(ctx, &pb.PutRequest{Key: "k", Data: []byte("illegal")}); status.Code(err) != codes.FailedPrecondition {
 		t.Fatal("destination accepted client write", err)
 	}
-	if _, err := a.clients[next].Delete(ctx, &pb.DeleteRequest{Key: "k", Rev: revisions[4]}); err != nil {
+	if _, err := source.Delete(ctx, &pb.DeleteRequest{Key: "k", Rev: revisions[4]}); err != nil {
 		t.Fatal(err)
 	}
 	eventuallyReplication(t, ctx, func() bool {
@@ -282,12 +359,16 @@ func TestCrossRegionReplicationBacklogSnapshotsAndBothLeaderChanges(t *testing.T
 		return true
 	})
 	b.stop(dest)
-	_ = b.leader()
-	out, err := a.clients[next].Put(ctx, &pb.PutRequest{Key: "k", Data: []byte("after-destination-election")})
-	if err != nil {
-		t.Fatal(err)
+	dest = b.leader()
+	out, err := source.Put(ctx, &pb.PutRequest{Key: "k", Data: []byte("after-destination-election")})
+	if err != nil || out.GetStatus() != pb.PutStatus_PUT_STATUS_OK {
+		t.Fatal(out, err)
 	}
 	eventuallyReplication(t, ctx, func() bool {
+		got, err := b.clients[dest].Get(ctx, &pb.GetRequest{Key: "k", Rev: out.Rev})
+		if err != nil || got.GetStatus() != pb.GetStatus_GET_STATUS_HIT || got.GetRev() != out.Rev || string(got.GetData()) != "after-destination-election" {
+			return false
+		}
 		for i, n := range b.nodes {
 			if !b.stopped[i] && n.Store().Peek("k", 0).LatestRev != out.Rev {
 				return false
@@ -295,7 +376,7 @@ func TestCrossRegionReplicationBacklogSnapshotsAndBothLeaderChanges(t *testing.T
 		}
 		return true
 	})
-	if _, err := a.clients[next].Delete(ctx, &pb.DeleteRequest{Key: "k"}); err != nil {
+	if _, err := source.Delete(ctx, &pb.DeleteRequest{Key: "k"}); err != nil {
 		t.Fatal(err)
 	}
 	eventuallyReplication(t, ctx, func() bool {
