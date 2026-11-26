@@ -1,4 +1,4 @@
-// Package shardraft runs one in-memory replica of a Raft group.
+// Package shardraft runs one replica of a Raft group.
 // An Instance becomes leader or follower through elections, not configuration.
 package shardraft
 
@@ -65,6 +65,8 @@ type Config struct {
 	// Join starts empty without Bootstrap. Peers are seed addresses, not voters.
 	// The local identity must be new; an existing leader must add it as a learner.
 	Join            bool
+	DataDir         string // Existing directory; empty keeps the replica memory-only.
+	Init            bool   // Explicitly create a new database; never overwrite one.
 	ReadMode        ReadMode
 	TickInterval    time.Duration
 	ElectionTicks   int
@@ -83,6 +85,9 @@ type Config struct {
 }
 
 func (c Config) normalized() (Config, error) {
+	if c.Init && c.DataDir == "" {
+		return c, fmt.Errorf("Raft initialization requires a data directory")
+	}
 	if c.RegionID == "" || c.GroupID == "" || c.PeerID == 0 || len(c.Peers) == 0 {
 		return c, fmt.Errorf("region, group, nonzero peer ID and peers are required")
 	}

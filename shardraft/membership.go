@@ -206,7 +206,9 @@ func (n *Instance) installPeer(peer Peer) error {
 	if peer.ID != n.cfg.PeerID && n.outbound[peer.ID] == nil {
 		queue := make(chan outgoing, 8)
 		n.outbound[peer.ID] = queue
-		n.startSender(peer.ID, queue)
+		if n.workerCtx != nil {
+			n.startSender(peer.ID, queue)
+		}
 	}
 	return nil
 }

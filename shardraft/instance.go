@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.etcd.io/bbolt"
 	"go.etcd.io/raft/v3"
 	"go.etcd.io/raft/v3/raftpb"
 	"google.golang.org/grpc/codes"
@@ -35,6 +36,7 @@ type pendingRequest struct {
 	readReady     bool
 	adminVerified bool
 	readStarted   time.Time
+	writeTerm     uint64
 }
 type outgoing struct {
 	data     []byte
@@ -47,13 +49,14 @@ type delivery struct {
 }
 
 // Instance owns one peer and one cache. All Raft and cache calls are serialized
-// by Run. An Instance is single-use: restarting without term/vote is unsafe.
+// by Run. An Instance is single-use; restart constructs a new Instance.
 type Instance struct {
 	cfg              Config
 	cache            StateMachine
 	transport        Transport
 	raw              *raft.RawNode
 	storage          *raft.MemoryStorage
+	disk             *bbolt.DB
 	peers            map[uint64]Peer
 	requests         chan request
 	incoming         chan raftpb.Message
@@ -85,7 +88,7 @@ type Instance struct {
 	workers       sync.WaitGroup
 }
 
-// NewInstance bootstraps a group, or prepares an empty joining member.
+// NewInstance bootstraps, prepares an empty joiner, or opens durable state.
 // Every initial peer must receive the same group identity and peer list.
 // The cache must be empty. No goroutines or network listeners are started here.
 func NewInstance(cfg Config, cache StateMachine, transport Transport) (*Instance, error) {
@@ -97,19 +100,16 @@ func NewInstance(cfg Config, cache StateMachine, transport Transport) (*Instance
 		return nil, fmt.Errorf("cache and transport are required")
 	}
 	storage := raft.NewMemoryStorage()
-	raw, err := raft.NewRawNode(&raft.Config{
+	raftCfg := &raft.Config{
 		ID: cfg.PeerID, Storage: storage,
 		ElectionTick: cfg.ElectionTicks, HeartbeatTick: cfg.HeartbeatTicks,
 		MaxSizePerMsg: 1 << 20, MaxCommittedSizePerReady: 16 << 20,
 		MaxUncommittedEntriesSize: 64 << 20, MaxInflightMsgs: 64,
 		CheckQuorum: true, PreVote: true, ReadOnlyOption: raft.ReadOnlySafe,
 		DisableProposalForwarding: true, Logger: cfg.Logger,
-	})
-	if err != nil {
-		return nil, err
 	}
 	n := &Instance{
-		cfg: cfg, cache: cache, transport: transport, raw: raw, storage: storage,
+		cfg: cfg, cache: cache, transport: transport, storage: storage,
 		peers: make(map[uint64]Peer), requests: make(chan request),
 		incoming: make(chan raftpb.Message, 64), deliveries: make(chan delivery, 64),
 		outbound: make(map[uint64]chan outgoing), stop: make(chan struct{}), done: make(chan struct{}),
@@ -137,9 +137,65 @@ func NewInstance(cfg Config, cache StateMachine, transport Transport) (*Instance
 			n.outbound[p.ID] = make(chan outgoing, 8)
 		}
 	}
-	if !cfg.Join {
-		if err := raw.Bootstrap(initial); err != nil {
+	if cfg.DataDir != "" {
+		identity, err := diskIdentity(cfg, initial)
+		if err != nil {
 			return nil, err
+		}
+		db, err := openDisk(cfg.DataDir, cfg.Init)
+		if err != nil {
+			return nil, fmt.Errorf("open Raft data: %w", err)
+		}
+		defer func() {
+			if n.disk == nil {
+				_ = db.Close()
+			}
+		}()
+		if cfg.Init {
+			var rd raft.Ready
+			if !cfg.Join {
+				raw, err := raft.NewRawNode(raftCfg)
+				if err != nil {
+					return nil, err
+				}
+				if err := raw.Bootstrap(initial); err != nil {
+					return nil, err
+				}
+				rd = raw.Ready()
+			}
+			if err := initDisk(db, identity, rd); err != nil {
+				return nil, fmt.Errorf("initialize Raft data: %w", err)
+			}
+		}
+		snap, err := loadDisk(db, identity, cfg.Join, storage)
+		if err != nil {
+			return nil, fmt.Errorf("load Raft data: %w", err)
+		}
+		if !raft.IsEmptySnap(snap) {
+			if err := n.restoreSnapshot(snap.Data); err != nil {
+				return nil, fmt.Errorf("restore stored checkpoint: %w", err)
+			}
+			n.applied, n.snapshotIndex, n.conf = snap.Metadata.Index, snap.Metadata.Index, snap.Metadata.ConfState
+			raftCfg.Applied = n.applied
+		}
+		n.lastIndex, err = storage.LastIndex()
+		if err != nil {
+			return nil, err
+		}
+		n.raw, err = raft.NewRawNode(raftCfg)
+		if err != nil {
+			return nil, err
+		}
+		n.disk = db
+	} else {
+		n.raw, err = raft.NewRawNode(raftCfg)
+		if err != nil {
+			return nil, err
+		}
+		if !cfg.Join {
+			if err := n.raw.Bootstrap(initial); err != nil {
+				return nil, err
+			}
 		}
 	}
 	n.publishKnown()
@@ -212,6 +268,9 @@ func (n *Instance) Run(ctx context.Context) (runErr error) {
 		n.publish(false, message)
 		cancel()
 		n.workers.Wait()
+		if n.disk != nil {
+			_ = n.disk.Close()
+		}
 		for id, p := range n.pending {
 			p.reply <- result{err: unavailable("instance stopped; proposed writes may have committed")}
 			delete(n.pending, id)
@@ -269,6 +328,9 @@ func (n *Instance) Close() error {
 	n.mu.Lock()
 	if n.lifecycle == 0 {
 		n.lifecycle = 2
+		if n.disk != nil {
+			_ = n.disk.Close()
+		}
 		close(n.done)
 	}
 	n.mu.Unlock()
@@ -371,13 +433,16 @@ func (n *Instance) accept(r request) {
 	var id requestID
 	binary.BigEndian.PutUint64(id[:8], n.cfg.PeerID)
 	binary.BigEndian.PutUint64(id[8:], n.sequence)
-	n.pending[id] = &pendingRequest{request: r}
+	p := &pendingRequest{request: r}
+	n.pending[id] = p
 	if read || r.change != nil {
 		n.pending[id].readStarted = time.Now()
 		n.raw.ReadIndex(id[:])
 	} else if err := n.raw.Propose(encodeCommand(r.op, id, r.data)); err != nil {
 		delete(n.pending, id)
 		r.reply <- result{err: status.Error(codes.ResourceExhausted, "Raft rejected proposal")}
+	} else {
+		p.writeTerm = s.Term
 	}
 }
 
@@ -421,6 +486,12 @@ func (n *Instance) observe(stage TimingStage, start time.Time) {
 func (n *Instance) processReady() error {
 	for n.raw.HasReady() {
 		rd := n.raw.Ready()
+		// A vote, append response or client ACK must never escape ahead of disk.
+		if n.disk != nil && (!raft.IsEmptyHardState(rd.HardState) || len(rd.Entries) > 0 || !raft.IsEmptySnap(rd.Snapshot)) {
+			if err := n.disk.Update(func(tx *bbolt.Tx) error { return saveDisk(tx.Bucket(stateBucket), rd) }); err != nil {
+				return fmt.Errorf("persist Raft Ready: %w", err)
+			}
+		}
 		var readStateAt time.Time
 		if len(rd.ReadStates) > 0 {
 			readStateAt = time.Now()
@@ -521,7 +592,8 @@ func (n *Instance) processReady() error {
 					if !expectedApplicationError(err) {
 						return fmt.Errorf("apply entry %d: %w", entry.Index, err)
 					}
-					if p, ok := n.pending[id]; ok {
+					// After restart the same local sequence can appear in an older term's log.
+					if p := n.pending[id]; p != nil && p.writeTerm == entry.Term {
 						p.reply <- result{message: response, err: err}
 						delete(n.pending, id)
 					}
@@ -558,8 +630,14 @@ func (n *Instance) processReady() error {
 			if int64(len(data)) > n.cfg.MaxWireBytes-wireOverhead {
 				return fmt.Errorf("checkpoint exceeds PoC transport limit")
 			}
-			if _, err := n.storage.CreateSnapshot(n.applied, &n.conf, data); err != nil {
+			snap, err := n.storage.CreateSnapshot(n.applied, &n.conf, data)
+			if err != nil {
 				return err
+			}
+			if n.disk != nil {
+				if err := compactDisk(n.disk, snap); err != nil {
+					return fmt.Errorf("persist Raft checkpoint: %w", err)
+				}
 			}
 			if err := n.storage.Compact(n.applied); err != nil {
 				return err

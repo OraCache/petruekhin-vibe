@@ -106,10 +106,16 @@ DEMO_MONITORING := prometheus grafana
 DEMO_NODES := $(filter a-%,$(DEMO_A)) a-4 $(DEMO_B)
 
 .PHONY: demo-build demo-up demo-up-a demo-up-b demo-up-learner demo-up-monitoring \
-	demo-stop-a demo-stop-b demo-stop-learner demo-stop-monitoring demo-stop-node demo-down
+	demo-init demo-start-node demo-stop-a demo-stop-b demo-stop-learner demo-stop-monitoring demo-stop-node demo-down
 
 demo-build:
 	$(DEMO) build cp-api
+
+demo-init: demo-build
+	$(if $(and $(strip $(NODES)),$(if $(filter-out $(DEMO_NODES),$(NODES)),,yes)),,$(error NODES must list new nodes from: $(DEMO_NODES)))
+	@set -e; for node in $(filter $(DEMO_NODES),$(NODES)); do \
+		ORACACHE_GEO_RAFT_INIT=true $(DEMO) $(DEMO_PROFILES) run --no-deps --rm $$node; \
+	done
 
 demo-up: demo-build
 	$(DEMO) $(DEMO_PROFILES) up -d --no-build --no-recreate
@@ -138,9 +144,9 @@ demo-stop-learner:
 demo-stop-monitoring:
 	$(DEMO) stop $(DEMO_MONITORING)
 
-demo-stop-node:
+demo-start-node demo-stop-node:
 	$(if $(and $(filter 1,$(words $(ID))),$(filter $(DEMO_NODES),$(ID))),,$(error ID must be one node_id from Grafana: $(DEMO_NODES)))
-	$(DEMO) $(DEMO_PROFILES) stop $(filter $(DEMO_NODES),$(ID))
+	$(DEMO) $(DEMO_PROFILES) $(if $(filter demo-start-node,$@),up -d --no-build --no-deps --no-recreate,stop) $(filter $(DEMO_NODES),$(ID))
 
 demo-down:
 	$(DEMO) $(DEMO_PROFILES) down -v

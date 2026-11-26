@@ -1,6 +1,5 @@
 // storage-node runs one member of a single-shard Raft group with the
-// versioned in-memory LRU store. State is memory only: a stopped node must not
-// be restarted into a running group.
+// versioned in-memory LRU store. Restart requires durable Raft state.
 package main
 
 import (
@@ -46,6 +45,8 @@ func main() {
 	flag.StringVar(&cfg.GroupID, "group-id", "region-a/shard-0/poc-1", "Raft group incarnation ID; identical on all members")
 	flag.Uint64Var(&cfg.PeerID, "peer-id", 0, "this member's Raft ID")
 	flag.BoolVar(&cfg.Join, "join", false, "join an existing group with a NEW peer ID; wait for AddLearner instead of bootstrapping")
+	flag.StringVar(&cfg.DataDir, "raft-data-dir", "", "existing directory for durable Raft state (empty: memory only)")
+	flag.BoolVar(&cfg.RaftInit, "raft-init", false, "create new Raft state and exit; never use for a previously running peer")
 	flag.Var(&peers, "peer", "group member id,node-id,client-address,raft-url (repeat for every member, including this one)")
 	flag.StringVar(&cfg.GRPCAddr, "grpc-listen", "127.0.0.1:28091", "client gRPC listen address")
 	flag.StringVar(&cfg.RaftAddr, "raft-listen", "127.0.0.1:28191", "Raft HTTP transport listen address")
@@ -84,6 +85,10 @@ func main() {
 	if err != nil {
 		logger.Error("configure node", "error", err)
 		os.Exit(2)
+	}
+	if cfg.RaftInit {
+		n.Close()
+		return
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

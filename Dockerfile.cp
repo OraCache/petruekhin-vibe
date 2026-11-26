@@ -11,8 +11,10 @@ COPY shardraft ./shardraft
 COPY cmd ./cmd
 RUN --mount=type=cache,target=/root/.cache/go-build \
     go build -trimpath -o /out/ ./cmd/cp-api ./cmd/storage-node ./cmd/api-gateway
+RUN mkdir -m 0700 /raft
 
 FROM scratch
 COPY --from=build /out/ /
+COPY --from=build --chown=65532:65532 --chmod=0700 /raft /raft
 COPY configs/cp-raft-compose.json /cp-config.json
 USER 65532:65532

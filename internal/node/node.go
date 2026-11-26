@@ -54,7 +54,9 @@ type Config struct {
 	GroupID  string // identifies this incarnation of the group
 	PeerID   uint64
 	Peers    []Peer
-	Join     bool               // Peers are seeds; start empty and wait for AddLearner.
+	Join     bool // Peers are seeds; start empty and wait for AddLearner.
+	DataDir  string
+	RaftInit bool
 	ReadMode shardraft.ReadMode // zero value: Linearizable
 
 	// Listen addresses; ignored when the matching Listener is supplied.
@@ -100,7 +102,7 @@ type Node struct {
 
 // New validates the configuration, binds the listeners and builds the store and
 // the Raft instance. It starts no goroutines; call Run.
-func New(cfg Config) (*Node, error) {
+func New(cfg Config) (_ *Node, retErr error) {
 	if cfg.NodeID == "" || cfg.Region == "" || cfg.GroupID == "" {
 		return nil, errors.New("node: node ID, region and group ID are required")
 	}
@@ -157,6 +159,7 @@ func New(cfg Config) (*Node, error) {
 	n.inst, err = shardraft.NewInstance(shardraft.Config{
 		RegionID: cfg.Region, ShardID: cfg.ShardID, GroupID: cfg.GroupID,
 		PeerID: cfg.PeerID, Peers: raftPeers, Join: cfg.Join, ReadMode: cfg.ReadMode,
+		DataDir: cfg.DataDir, Init: cfg.RaftInit,
 		TickInterval: cfg.TickInterval, ElectionTicks: cfg.ElectionTicks,
 		RequestTimeout: cfg.RequestTimeout, SnapshotEntries: cfg.SnapshotEntries, MaxWireBytes: cfg.MaxRaftWireBytes,
 		Observer: raftMetrics,
@@ -165,6 +168,11 @@ func New(cfg Config) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		if retErr != nil {
+			_ = n.inst.Close()
+		}
+	}()
 
 	if n.grpcLis, err = listener(cfg.GRPCListener, cfg.GRPCAddr); err != nil {
 		return nil, err
@@ -336,7 +344,7 @@ func protoRole(role string) controlplanev1.RaftRole {
 
 // Run serves until ctx is cancelled or the Raft instance fails fatally, then
 // shuts everything down. It returns the fatal error, if any. Run may be called
-// once; a stopped node is never restarted into the group (no persistence).
+// once. To restart, construct a new Node using the same durable Raft state.
 func (n *Node) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

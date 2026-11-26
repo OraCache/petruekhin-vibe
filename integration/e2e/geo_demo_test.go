@@ -67,10 +67,15 @@ func TestStagedGeoDemo(t *testing.T) {
 		return out
 	}
 	profiles := []string{"--profile", "region-b", "--profile", "learner"}
+	bNodes := []string{"b-1", "b-2", "b-3"}
+	bPaused := false
 	t.Logf("Compose project: %s", project)
 	t.Cleanup(func() {
 		cleanup, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
+		if bPaused {
+			_, _ = compose(cleanup, append([]string{"--profile", "region-b", "unpause"}, bNodes...)...)
+		}
 		if t.Failed() {
 			out, err := compose(cleanup, append(slices.Clone(profiles), "logs", "--tail=25")...)
 			t.Logf("Compose logs: %v\n%s", err, out)
@@ -128,8 +133,8 @@ func TestStagedGeoDemo(t *testing.T) {
 		return json.NewDecoder(res.Body).Decode(out)
 	}
 
+	makeDemo("demo-init", "NODES=a-1 a-2 a-3")
 	makeDemo("demo-up-a", "demo-up-monitoring")
-	bNodes := []string{"b-1", "b-2", "b-3"}
 	absent(append([]string{"a-4"}, bNodes...)...)
 	conn := dial(port("api-gateway", "28080"))
 	cache := pb.NewCacheGatewayClient(conn)
@@ -228,6 +233,7 @@ func TestStagedGeoDemo(t *testing.T) {
 	})
 	t.Logf("A accepted revision %d while B and a-4 were absent", seed.GetRev())
 
+	makeDemo("demo-init", "NODES=b-1 b-2 b-3")
 	makeDemo("demo-up-b")
 	absent("a-4")
 	type replicaStatus struct {
@@ -268,6 +274,7 @@ func TestStagedGeoDemo(t *testing.T) {
 	}
 	verifyB("before-b", seed.GetRev())
 
+	makeDemo("demo-init", "NODES=a-4")
 	makeDemo("demo-up-learner")
 	wantHealth["a-4:28191"] = "up"
 	checkTargets()
@@ -389,6 +396,43 @@ func TestStagedGeoDemo(t *testing.T) {
 		}
 		return nil
 	})
+	run("kill", "-s", "SIGKILL", serving)
+	successor := waitCPRoute(t, ctx, routes, serving).Write[0].NodeID
+	waitGeo(t, ctx, "successor reads the last acknowledged value", func(ctx context.Context) error {
+		return read(ctx, cache, "after-replace", updated.GetRev(), successor)
+	})
+	// Leave an unacknowledged WAN change to be delivered after A's cold restart.
+	bPaused = true
+	run(append([]string{"--profile", "region-b", "pause"}, bNodes...)...)
+	afterKill := put("after-kill", updated.GetRev())
+	if afterKill.GetServedBy().GetInstance() != successor {
+		t.Fatalf("post-crash write did not use successor: %v", afterKill.GetServedBy())
+	}
+	for _, voter := range aVoters {
+		if voter != serving {
+			run("kill", "-s", "SIGKILL", voter)
+		}
+	}
+	// No A process survives to repair an empty replica. Reuse the same volumes and IDs.
+	// The original crashed leader is required for this two-of-three quorum.
+	makeDemo("demo-start-node", "ID="+serving)
+	makeDemo("demo-start-node", "ID="+successor)
+	waitGeo(t, ctx, "cold A restart preserves acknowledged value", func(ctx context.Context) error {
+		return read(ctx, cache, "after-kill", afterKill.GetRev(), "")
+	})
+	waitGeo(t, ctx, "cold A restart preserves replacement membership", func(ctx context.Context) error {
+		m, err := getMembership(ctx)
+		if err == nil && len(m.GetMembers()) == 3 && !m.GetJoint() && member(m, 4).GetVoter() && slices.Contains(m.GetRemovedIds(), old.GetId()) {
+			return nil
+		}
+		return fmt.Errorf("membership=%v error=%v", m, err)
+	})
+	run(append([]string{"--profile", "region-b", "unpause"}, bNodes...)...)
+	bPaused = false
+	verifyB("after-kill", afterKill.GetRev())
+	restarted := put("after-restart", afterKill.GetRev())
+	verifyB("after-restart", restarted.GetRev())
+	t.Logf("cold A restart required %s; successor %s had acknowledged revision %d", serving, successor, afterKill.GetRev())
 	makeDemo("demo-stop-learner", "demo-stop-b", "demo-stop-monitoring", "demo-stop-a")
 	if running := run(append(slices.Clone(profiles), "ps", "--status", "running", "--services")...); running != "" {
 		t.Fatalf("demo stop targets left services running: %s", running)
