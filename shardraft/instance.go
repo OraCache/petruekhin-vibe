@@ -323,12 +323,13 @@ func (n *Instance) accept(r request) {
 		return
 	}
 	s := n.raw.BasicStatus()
+
 	if !n.canServe() {
 		r.reply <- result{err: unavailable("member is joining, a learner, or removed")}
 		return
 	}
-	read := r.op == opGet || r.op == opBatchGet
-	if read && n.cfg.ReadMode == Local {
+	read := r.op == opGet || r.op == opBatchGet || r.op == opReadOutbox
+	if read && r.op != opReadOutbox && n.cfg.ReadMode == Local {
 		if s.Lead == 0 || n.applied < s.Commit {
 			r.reply <- result{err: unavailable("replica is not ready")}
 			return
