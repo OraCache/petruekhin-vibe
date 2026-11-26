@@ -97,3 +97,53 @@ up:
 
 down:
 	docker compose down
+
+DEMO := docker compose -f compose.geo-demo.yaml
+DEMO_PROFILES := --profile region-b --profile learner
+DEMO_A := cp-api api-gateway a-1 a-2 a-3
+DEMO_B := b-1 b-2 b-3
+DEMO_MONITORING := prometheus grafana
+DEMO_NODE_STOPS := $(addprefix demo-stop-,a-1 a-2 a-3 a-4 $(DEMO_B))
+
+.PHONY: demo-build demo-up demo-up-a demo-up-b demo-up-learner demo-up-monitoring \
+	demo-stop-a demo-stop-b demo-stop-learner demo-stop-monitoring demo-down demo-test \
+	$(DEMO_NODE_STOPS)
+
+demo-build:
+	$(DEMO) build cp-api
+
+demo-up: demo-build
+	$(DEMO) $(DEMO_PROFILES) up -d --no-build --no-recreate
+
+demo-up-a: demo-build
+	$(DEMO) up -d --no-build --no-recreate $(DEMO_A)
+
+demo-up-b:
+	$(DEMO) up -d --no-build --no-deps --no-recreate $(DEMO_B)
+
+demo-up-learner:
+	$(DEMO) up -d --no-build --no-deps --no-recreate a-4
+
+demo-up-monitoring:
+	$(DEMO) up -d --no-recreate $(DEMO_MONITORING)
+
+demo-stop-a:
+	$(DEMO) stop $(DEMO_A)
+
+demo-stop-b:
+	$(DEMO) --profile region-b stop $(DEMO_B)
+
+demo-stop-learner:
+	$(DEMO) --profile learner stop a-4
+
+demo-stop-monitoring:
+	$(DEMO) stop $(DEMO_MONITORING)
+
+$(DEMO_NODE_STOPS): demo-stop-%:
+	$(DEMO) $(DEMO_PROFILES) stop $*
+
+demo-down:
+	$(DEMO) $(DEMO_PROFILES) down -v
+
+demo-test:
+	cd integration/e2e && GOWORK=off go test -tags=e2e -count=1 -timeout=10m -run '^TestStagedGeoDemo$$' -v

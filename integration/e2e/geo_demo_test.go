@@ -34,15 +34,28 @@ func TestStagedGeoDemo(t *testing.T) {
 	if build {
 		image = project + ":local"
 	}
-	compose := func(ctx context.Context, args ...string) (string, error) {
-		cmd := exec.CommandContext(ctx, "docker", append([]string{"compose", "-p", project, "-f", "compose.geo-demo.yaml"}, args...)...)
+	command := func(ctx context.Context, name string, args ...string) (string, error) {
+		cmd := exec.CommandContext(ctx, name, args...)
 		cmd.Dir = "../.."
-		cmd.Env = append(os.Environ(), "COMPOSE_PROFILES=", "ORACACHE_GEO_IMAGE="+image, "ORACACHE_GEO_HOST_PORT=0")
+		cmd.Env = append(os.Environ(), "COMPOSE_PROJECT_NAME="+project, "COMPOSE_PROFILES=", "ORACACHE_GEO_IMAGE="+image, "ORACACHE_GEO_HOST_PORT=0")
 		out, err := cmd.Output()
 		if exit, ok := err.(*exec.ExitError); ok {
 			err = fmt.Errorf("%w: %s", err, exit.Stderr)
 		}
 		return strings.TrimSpace(string(out)), err
+	}
+	compose := func(ctx context.Context, args ...string) (string, error) {
+		return command(ctx, "docker", append([]string{"compose", "-f", "compose.geo-demo.yaml"}, args...)...)
+	}
+	makeDemo := func(targets ...string) {
+		t.Helper()
+		args := []string{"-j1"}
+		if !build {
+			args = append(args, "-o", "demo-build") // CI already built the image.
+		}
+		if out, err := command(ctx, "make", append(args, targets...)...); err != nil {
+			t.Fatalf("make %v: %v\n%s", targets, err, out)
+		}
 	}
 	run := func(args ...string) string {
 		t.Helper()
@@ -61,8 +74,8 @@ func TestStagedGeoDemo(t *testing.T) {
 			out, err := compose(cleanup, append(slices.Clone(profiles), "logs", "--tail=25")...)
 			t.Logf("Compose logs: %v\n%s", err, out)
 		}
-		if out, err := compose(cleanup, append(slices.Clone(profiles), "down", "--volumes")...); err != nil {
-			t.Errorf("compose down: %v\n%s", err, out)
+		if out, err := command(cleanup, "make", "demo-down"); err != nil {
+			t.Errorf("make demo-down: %v\n%s", err, out)
 		}
 		if build {
 			// A failed build may not have created the image.
@@ -73,13 +86,10 @@ func TestStagedGeoDemo(t *testing.T) {
 			}
 		}
 	})
-	if build {
-		run("build", "cp-api")
-	} else if out, err := exec.CommandContext(ctx, "docker", "image", "inspect", image).CombinedOutput(); err != nil {
-		t.Fatalf("prebuilt ORACACHE_CP_IMAGE %q required: %v\n%s", image, err, out)
-	}
-	up := func(services ...string) {
-		run(append([]string{"up", "-d", "--no-build", "--no-deps", "--no-recreate"}, services...)...)
+	if !build {
+		if out, err := exec.CommandContext(ctx, "docker", "image", "inspect", image).CombinedOutput(); err != nil {
+			t.Fatalf("prebuilt ORACACHE_CP_IMAGE %q required: %v\n%s", image, err, out)
+		}
 	}
 	absent := func(services ...string) {
 		t.Helper()
@@ -117,7 +127,7 @@ func TestStagedGeoDemo(t *testing.T) {
 		return json.NewDecoder(res.Body).Decode(out)
 	}
 
-	run("up", "-d", "--no-build")
+	makeDemo("demo-up-a", "demo-up-monitoring")
 	bNodes := []string{"b-1", "b-2", "b-3"}
 	absent(append([]string{"a-4"}, bNodes...)...)
 	conn := dial(port("api-gateway", "28080"))
@@ -204,7 +214,7 @@ func TestStagedGeoDemo(t *testing.T) {
 	})
 	t.Logf("A accepted revision %d while B and a-4 were absent", seed.GetRev())
 
-	up(bNodes...)
+	makeDemo("demo-up-b")
 	absent("a-4")
 	type replicaStatus struct {
 		Role         string
@@ -244,7 +254,7 @@ func TestStagedGeoDemo(t *testing.T) {
 	}
 	verifyB("before-b", seed.GetRev())
 
-	up("a-4")
+	makeDemo("demo-up-learner")
 	wantHealth["a-4:28191"] = "up"
 	checkTargets()
 	learnerStatus := port("a-4", "28191") + "/status"
@@ -323,7 +333,7 @@ func TestStagedGeoDemo(t *testing.T) {
 		}
 		return fmt.Errorf("membership: %v, error: %v", m, err)
 	})
-	run("stop", old.GetNodeId())
+	makeDemo("demo-stop-" + old.GetNodeId())
 	wantHealth[old.GetNodeId()+":28191"] = "down"
 	checkTargets()
 	aVoters[slices.Index(aVoters, old.GetNodeId())] = "a-4"
@@ -342,6 +352,10 @@ func TestStagedGeoDemo(t *testing.T) {
 	}
 	verifyB("after-replace", updated.GetRev())
 	t.Logf("replaced %s with a-4; gateway write advanced revision %d → %d", old.GetNodeId(), seed.GetRev(), updated.GetRev())
+	makeDemo("demo-stop-learner", "demo-stop-b", "demo-stop-monitoring", "demo-stop-a")
+	if running := run(append(slices.Clone(profiles), "ps", "--status", "running", "--services")...); running != "" {
+		t.Fatalf("demo stop targets left services running: %s", running)
+	}
 }
 
 func waitGeo(t *testing.T, ctx context.Context, description string, probe func(context.Context) error) {
