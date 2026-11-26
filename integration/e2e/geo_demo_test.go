@@ -132,7 +132,10 @@ func TestStagedGeoDemo(t *testing.T) {
 	conn := dial(port("api-gateway", "28080"))
 	cache := pb.NewCacheGatewayClient(conn)
 	routes := "http://" + port("api-gateway", "9466") + "/routes"
-	first := waitCPRoute(t, ctx, routes, "")
+	first, err := readCPRoutes(ctx, &http.Client{Timeout: time.Second}, routes)
+	if err != nil {
+		t.Fatalf("read write route after demo-up-a: %v", err)
+	}
 	aVoters := []string{"a-1", "a-2", "a-3"}
 	if !slices.Contains(aVoters, first.Write[0].NodeID) {
 		t.Fatalf("initial write route: %+v", first)
@@ -197,6 +200,7 @@ func TestStagedGeoDemo(t *testing.T) {
 		})
 	}
 	checkTargets()
+	timelineStart := time.Now().Unix()
 	grafana := port("grafana", "3000") + "/api/dashboards/uid/oracache-mvp"
 	queries := make(map[int][]string)
 	waitGeo(t, ctx, "MVP dashboard provisioned", func(ctx context.Context) error {
@@ -271,6 +275,11 @@ func TestStagedGeoDemo(t *testing.T) {
 	t.Logf("A accepted revision %d while B was absent", seed.GetRev())
 
 	makeDemo("demo-up-b")
+	routesB := "http://" + port("api-gateway-b", "9466") + "/routes"
+	firstB, err := readCPRoutes(ctx, &http.Client{Timeout: time.Second}, routesB)
+	if err != nil || !slices.Contains(bNodes, firstB.Read[0].NodeID) {
+		t.Fatalf("local read route after demo-up-b: %+v, %v", firstB, err)
+	}
 	wantHealth["api-gateway-b:9466"] = "up"
 	for _, node := range bNodes {
 		wantHealth[node+":28191"] = "up"
@@ -315,6 +324,20 @@ func TestStagedGeoDemo(t *testing.T) {
 		}
 		return nil
 	})
+
+	// A range query sees both pre-start and live states; they must share one series per node.
+	var timeline struct {
+		Data struct {
+			Result []struct{ Metric map[string]string }
+		}
+	}
+	timelineURL := fmt.Sprintf("%squery_range?query=%s&start=%d&end=%d&step=1", prom, url.QueryEscape(queries[4][0]), timelineStart, time.Now().Unix())
+	if err := getJSON(ctx, timelineURL, &timeline); err != nil {
+		t.Fatal(err)
+	}
+	if len(timeline.Data.Result) != 7 {
+		t.Fatalf("MVP role timeline must have one series per node: %+v", timeline.Data.Result)
+	}
 
 	makeDemo("demo-up-learner")
 	checkRole := func(node, want string) {

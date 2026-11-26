@@ -108,11 +108,27 @@ demo-build:
 demo-up: demo-build
 	$(DEMO) up -d --no-build --no-recreate
 
+define demo-wait-route
+	@command -v curl >/dev/null && command -v jq >/dev/null || { echo '$@ requires curl and jq' >&2; exit 1; }
+	@addr=$$($(DEMO) port $(1) 9466) && test -n "$$addr" || exit 1; \
+	url="http://$$addr/routes"; \
+	echo "Waiting for $(1) $(2) route at $$url"; \
+	for attempt in $$(seq 30); do \
+		if curl -fs --max-time 1 "$$url" | jq -e '$(3)' >/dev/null 2>&1; then \
+			echo '$(1) $(2) route is ready'; exit 0; \
+		fi; \
+		sleep 1; \
+	done; \
+	echo "No $(1) $(2) route at $$url; check: $(DEMO) logs --tail=50 $(1) cp-api" >&2; exit 1
+endef
+
 demo-up-a: demo-build
 	$(DEMO) up -d --no-build --no-recreate api-gateway a-1 a-2 a-3 prometheus grafana
+	$(call demo-wait-route,api-gateway,write,.write_routes["0"].NodeID // "" | length > 0)
 
 demo-up-b:
 	$(DEMO) up -d --no-build --no-recreate b-1 b-2 b-3 api-gateway-b
+	$(call demo-wait-route,api-gateway-b,local read,.read_routes["0"].Region == "region-b" and (.read_routes["0"].NodeID // "" | length > 0))
 
 demo-up-learner:
 	$(DEMO) --profile learner up -d --no-build --no-recreate a-4

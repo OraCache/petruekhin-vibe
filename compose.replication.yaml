@@ -63,7 +63,7 @@ services:
     <<: *app
     depends_on: [cp-api]
     command: [/api-gateway, --region=region-b, --node-id=gw-b, --cp-addr=cp-api:28081, --listen=0.0.0.0:28080, --status-listen=0.0.0.0:9466, --poll-interval=1s]
-    ports: ["127.0.0.1:${ORACACHE_REPLICATION_PORT:-39080}:28080"]
+    ports: ["127.0.0.1:${ORACACHE_REPLICATION_PORT:-39080}:28080", "127.0.0.1:${ORACACHE_REPLICATION_PORT:-39066}:9466"]
   a-1:
     <<: *a
     command: [--node-id=a-1, --peer-id=1]

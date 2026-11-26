@@ -14,12 +14,11 @@ make demo-up
 
 ### Поэтапный показ
 
-Начни с пустого стенда. Подними A и мониторинг, запиши ключ, затем подними B:
+Начни с пустого стенда (нужны `curl` и `jq`). `make demo-up-a` дождётся маршрута записи в A, а `make demo-up-b` — маршрута чтения в B. Между этими командами запиши ключ:
 
 ```sh
 make demo-up-a
 export ORACACHE_ENDPOINT=127.0.0.1:38080
-# Дождись маршрута записи на http://127.0.0.1:39466/routes.
 go run ./cmd/oracache put demo:geo before-b --expected-rev=0
 make demo-up-b
 ORACACHE_ENDPOINT=127.0.0.1:39080 go run ./cmd/oracache get demo:geo
