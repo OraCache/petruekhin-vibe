@@ -64,7 +64,7 @@ func (m *raftMetrics) Collect(ch chan<- prometheus.Metric) {
 	stats := m.replica.Store().Stats()
 	for i, value := range [...]float64{
 		boolGauge(s.Running && s.Role == "StateLeader"),
-		boolGauge(s.Running && s.Role == "StateFollower"),
+		boolGauge(s.Running && s.Role == "StateFollower" && !s.IsLearner),
 		boolGauge(s.Running && s.IsLearner),
 		boolGauge(s.Running && s.Member),
 		boolGauge(s.Running && s.LeaderID != 0),
