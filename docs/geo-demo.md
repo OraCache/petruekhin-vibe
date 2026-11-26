@@ -1,6 +1,12 @@
 # Демо: регион A, холодный запуск B, замена узла в A
 
-Нужны Docker Compose, Go 1.27.3, Bash и свободные локальные порты из
+Автоматическая проверка сценария (Docker Compose обязателен):
+
+```bash
+(cd integration/e2e && GOWORK=off go test -tags=e2e -count=1 -run '^TestStagedGeoDemo$' -v)
+```
+
+Тест также входит в `make test-e2e`. Для ручного показа ниже нужны Docker Compose, Go 1.27.3, Bash и свободные локальные порты из
 [`compose.geo-demo.yaml`](../compose.geo-demo.yaml). Запускайте команды из корня
 репозитория в одной сессии. Начинайте с пустого проекта `oracache-geo-demo`.
 
