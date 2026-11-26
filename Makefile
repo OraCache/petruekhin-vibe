@@ -106,7 +106,7 @@ DEMO_MONITORING := prometheus grafana
 DEMO_NODE_STOPS := $(addprefix demo-stop-,a-1 a-2 a-3 a-4 $(DEMO_B))
 
 .PHONY: demo-build demo-up demo-up-a demo-up-b demo-up-learner demo-up-monitoring \
-	demo-stop-a demo-stop-b demo-stop-learner demo-stop-monitoring demo-down demo-test \
+	demo-stop-a demo-stop-b demo-stop-learner demo-stop-monitoring demo-down \
 	$(DEMO_NODE_STOPS)
 
 demo-build:
@@ -144,6 +144,3 @@ $(DEMO_NODE_STOPS): demo-stop-%:
 
 demo-down:
 	$(DEMO) $(DEMO_PROFILES) down -v
-
-demo-test:
-	cd integration/e2e && GOWORK=off go test -tags=e2e -count=1 -timeout=10m -run '^TestStagedGeoDemo$$' -v

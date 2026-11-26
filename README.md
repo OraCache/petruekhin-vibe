@@ -2,31 +2,29 @@
 
 ## Демо: два региона, мониторинг и замена ноды
 
-Из корня репозитория, с Docker Compose и `make`:
+`make` только запускает и останавливает контейнеры. Запросы и изменения состава Raft делай вручную через `oracache`. Нужны Docker Compose, `make` и Go 1.27.3 для CLI.
+
+**1. На пустом стенде подними A и мониторинг:** `make demo-up-a demo-up-monitoring`.
+
+Дождись маршрута записи в [Gateway](http://127.0.0.1:39466/routes), затем запиши ключ до старта B:
 
 ```sh
-make demo-up     # A, B, Prometheus, Grafana и отдельная нода a-4
-make demo-down   # удалить весь демостенд и его данные
+export ORACACHE_ENDPOINT=127.0.0.1:38080
+go run ./cmd/oracache put demo:geo before-b --expected-rev=0
+go run ./cmd/oracache get demo:geo
 ```
 
-Gateway: `127.0.0.1:38080` · [Grafana](http://127.0.0.1:33000/d/oracache-mvp) ·
-[Prometheus](http://127.0.0.1:39090/targets). Нода `a-4` стартует, но не вступает в Raft сама.
+В [Prometheus](http://127.0.0.1:39090/targets) B и `a-4` пока `DOWN`; графики — в [Grafana](http://127.0.0.1:33000/d/oracache-mvp).
 
-**Весь сценарий одной командой: `make demo-test`** (нужен Go 1.27.3).
-Тест сам запишет данные до старта B, проверит доставку, добавит `a-4` как learner,
-сделает замену и удалит свой тестовый стенд.
+**2. Подними B:** `make demo-up-b`. Прочитай контрольный ключ напрямую из лидера B; выбор порта и команда `get` — в [сценарии показа](docs/geo-demo.md#2-запустить-b-и-прочитать-контрольный-ключ-напрямую).
 
-Для показа по шагам на пустом стенде:
+**3. Подними `a-4`:** `make demo-up-learner`. Это только запуск процесса, нода ещё не в Raft. Дальше в CLI: `membership add-learner` → дождись, пока нода догонит лидера → `membership replace`. `replace` повышает learner и убирает старого voter одной операцией; отдельный `promote` перед ним не нужен. [Команды с аргументами](docs/geo-demo.md#3-запустить-learner-и-заменить-voter-в-a).
 
-1. `make demo-up-a demo-up-monitoring` — запустить A и мониторинг. Записать контрольный ключ до запуска B.
-2. `make demo-up-b` — запустить B и проверить, что он получил контрольную запись.
-3. `make demo-up-learner` — запустить `a-4`; затем добавить её через CLI и сделать `replace`.
-
-Запросы к Gateway и команды замены — в [сценарии показа](docs/geo-demo.md).
+Если нужен просто весь стенд без показа холодного старта B: `make demo-up`.
 Остановить часть стенда: `make demo-stop-a`, `make demo-stop-b`, `make demo-stop-learner`
-или `make demo-stop-monitoring`. Одну ноду — например, `make demo-stop-a-3`.
+или `make demo-stop-monitoring`. Остановить контейнер одной ноды — например, `make demo-stop-a-3`; это не удаляет её из Raft.
 Ноды хранят состояние в памяти: **не запускай остановленную ноду с тем же ID обратно в живую группу**.
-Для чистого повтора используй `make demo-down`.
+`make demo-down` удаляет весь демостенд и его данные. Go E2E отдельно запускается через `make test-e2e`.
 
 ## PoC с Control Plane и Gateway
 
