@@ -22,6 +22,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
@@ -170,6 +171,43 @@ func TestStagedGeoDemo(t *testing.T) {
 	}
 	waitGeo(t, ctx, "seed through gateway", func(ctx context.Context) error {
 		return read(ctx, cache, "before-b", seed.GetRev(), first.Write[0].NodeID)
+	})
+	const traceID = "78e6b10cd9a24e3a8ac46972f048ee30"
+	traceCtx, cancelTrace := context.WithTimeout(ctx, 5*time.Second)
+	traceCtx = metadata.AppendToOutgoingContext(traceCtx, "traceparent", "00-"+traceID+"-43e43c2ee47e5148-01")
+	err := read(traceCtx, cache, "before-b", seed.GetRev(), "")
+	cancelTrace()
+	if err != nil {
+		t.Fatal(err)
+	}
+	jaegerTrace := port("jaeger", "16686") + "/api/traces/" + traceID
+	waitGeo(t, ctx, "Jaeger receives a Gateway → storage → Raft trace", func(ctx context.Context) error {
+		var out struct {
+			Data []struct {
+				TraceID   string
+				Processes map[string]struct{ ServiceName string }
+				Spans     []struct{ OperationName, ProcessID string }
+			}
+		}
+		if err := getJSON(ctx, jaegerTrace, &out); err != nil {
+			return err
+		}
+		seen := make(map[string]bool)
+		for _, tr := range out.Data {
+			if tr.TraceID != traceID {
+				continue
+			}
+			for _, span := range tr.Spans {
+				service := tr.Processes[span.ProcessID].ServiceName
+				seen[service] = true
+				seen[service+":"+span.OperationName] = true
+			}
+		}
+		if !seen["api-gateway"] || !seen["storage-node:raft.admission"] || !seen["storage-node:raft.result"] {
+			return fmt.Errorf("incomplete trace: %v", seen)
+		}
+		t.Logf("Jaeger trace %s includes Gateway, storage and both Raft spans", traceID)
+		return nil
 	})
 
 	prom := port("prometheus", "9090") + "/api/v1/"

@@ -102,7 +102,7 @@ DEMO := docker compose -f compose.geo-demo.yaml
 DEMO_PROFILES := --profile region-b --profile learner
 DEMO_A := cp-api api-gateway a-1 a-2 a-3
 DEMO_B := b-1 b-2 b-3
-DEMO_MONITORING := prometheus grafana
+DEMO_MONITORING := prometheus grafana jaeger
 DEMO_NODES := $(filter a-%,$(DEMO_A)) a-4 $(DEMO_B)
 
 .PHONY: demo-build demo-up demo-up-a demo-up-b demo-up-learner demo-up-monitoring \

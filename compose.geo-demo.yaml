@@ -5,9 +5,16 @@ x-app: &app
   image: ${ORACACHE_GEO_IMAGE:-oracache-geo-demo:local}
   pull_policy: never
 
+x-tracing: &tracing
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+  OTEL_EXPORTER_OTLP_TIMEOUT: "2000"
+  OTEL_TRACES_SAMPLER: parentbased_traceidratio
+  OTEL_TRACES_SAMPLER_ARG: "0.1"
+
 x-a: &a
   <<: *app
   depends_on: [cp-api]
+  environment: *tracing
   entrypoint:
     - /storage-node
     - --cp-addr=cp-api:28081
@@ -27,6 +34,7 @@ x-b: &b
   <<: *app
   profiles: [region-b]
   depends_on: [cp-api]
+  environment: *tracing
   entrypoint:
     - /storage-node
     - --cp-addr=cp-api:28081
@@ -55,6 +63,7 @@ services:
   api-gateway:
     <<: *app
     depends_on: [cp-api]
+    environment: *tracing
     command:
       - /api-gateway
       - --region=region-a
@@ -68,6 +77,7 @@ services:
     <<: *app
     profiles: [region-b]
     depends_on: [cp-api]
+    environment: *tracing
     command: [/api-gateway, --region=region-b, --node-id=gw-b, --cp-addr=cp-api:28081, --listen=0.0.0.0:28080, --status-listen=0.0.0.0:9466, --poll-interval=1s]
     ports: ["127.0.0.1:${ORACACHE_GEO_HOST_PORT:-39080}:28080"]
   a-1:
@@ -109,6 +119,9 @@ services:
     volumes:
       - ./configs/monitoring/prometheus-geo-demo.yml:/etc/prometheus/prometheus.yml:ro
       - ./configs/monitoring/raft-rules.yml:/etc/prometheus/raft-rules.yml:ro
+  jaeger:
+    image: cr.jaegertracing.io/jaegertracing/jaeger:2.23.0
+    ports: ["127.0.0.1:${ORACACHE_GEO_HOST_PORT:-16686}:16686"]
   grafana:
     image: grafana/grafana:12.3.0
     depends_on: [prometheus]
