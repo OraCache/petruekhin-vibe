@@ -10,7 +10,9 @@ make demo-up
 
 [Grafana](http://127.0.0.1:33000/d/oracache-mvp) показывает трафик и доступность по регионам, роли Raft и длину outbox A → B. Gateway A — `127.0.0.1:38080` (запись и чтение), Gateway B — `127.0.0.1:39080` (чтение). Дождись маршрута записи на [Gateway A](http://127.0.0.1:39466/routes).
 
-Очистка: `make demo-down`. Данные в памяти; не запускай остановленный voter заново с тем же ID в живой группе.
+Prometheus получает список storage-нод из Control Plane отдельно для A и B. [Targets](http://127.0.0.1:39090/targets) показывают, с каких нод он собирает метрики. Если CP недоступен, Prometheus продолжит опрашивать известные ноды, но на таймлайне ролей появится пробел: без CP Grafana не знает состав группы.
+
+Очистка: `make demo-down` удаляет и том с последним известным составом Raft. Данные кэша в памяти; не запускай остановленный voter заново с тем же ID в живой группе.
 
 ### Генератор нагрузки
 
@@ -45,6 +47,8 @@ go run ./cmd/oracache membership add-learner --group-id="$GROUP" --region=region
 curl -fsS http://127.0.0.1:38194/status
 ```
 
+`make demo-up-learner` только запускает процесс. В Targets и на таймлайне `a-4` появится после `add-learner`.
+
 Убедись, что `a-4` стала learner и её `AppliedIndex` дошёл до индекса добавления. Найди лидера A на таймлайне Grafana и останови его, например `make demo-stop-node ID=a-3`. Дождись нового лидера, прочитай контрольный ключ и запиши новое значение через тот же Gateway A. Затем замени погибшего voter на `a-4` (ниже `3` — пример ID погибшего лидера):
 
 ```sh
@@ -52,7 +56,7 @@ go run ./cmd/oracache membership replace --group-id="$GROUP" --region=region-a -
 go run ./cmd/oracache membership get --group-id="$GROUP" --region=region-a
 ```
 
-Проверь, что `a-4` стала voter, старый ID удалён, а новая запись после замены снова доходит в B. Автоматический сценарий входит в `make test-e2e`.
+Остановленный voter остаётся на таймлайне как «Нет scrape», пока он в составе. После `replace` проверь, что `a-4` стала voter, старая нода исчезла из текущих целей, а новая запись снова доходит в B. Автоматический сценарий входит в `make test-e2e`.
 
 ## PoC с Control Plane и Gateway
 
